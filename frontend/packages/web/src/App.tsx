@@ -809,20 +809,28 @@ export default function App() {
         <div className="session-sidebar">
           <div className="sidebar-header">
             <span className="sidebar-title">Sessions</span>
-            <button
-              className="sidebar-add-btn"
-              onClick={createNewSession}
-              title="New session"
-            >
-              <Plus size={14} />
-            </button>
+            <div className="sidebar-header-actions">
+              <button
+                className="sidebar-icon-btn"
+                onClick={fetchSessions}
+                title="Refresh sessions"
+              >
+                <RefreshCw size={14} />
+              </button>
+              <button
+                className="sidebar-add-btn"
+                onClick={createNewSession}
+                title="New session"
+              >
+                <Plus size={14} />
+              </button>
+            </div>
           </div>
 
           <div className="session-list">
             {sessions.length === 0 ? (
               <div className="sidebar-empty">
-                No sessions yet.<br />
-                Create one to get started.
+                No sessions yet.
               </div>
             ) : (
               sessions.map((session) => (
@@ -840,12 +848,6 @@ export default function App() {
                 </button>
               ))
             )}
-          </div>
-
-          <div className="sidebar-refresh">
-            <button className="button ghost small" onClick={fetchSessions}>
-              <RefreshCw size={12} /> Refresh
-            </button>
           </div>
         </div>
 
@@ -868,8 +870,12 @@ export default function App() {
                 <MessageSquare className="empty-state-icon" />
                 <div className="empty-state-title">No Session Selected</div>
                 <p className="empty-state-text">
-                  Click + in the sidebar to create a new session, or select an existing one.
+                  Create a new session to start chatting with an agent.
                 </p>
+                <button className="button primary" onClick={createNewSession} style={{ marginTop: 16 }}>
+                  <Plus className="button-icon" />
+                  Create Session
+                </button>
               </div>
             ) : transcriptMessages.length === 0 && !sessionError ? (
               <div className="empty-state">

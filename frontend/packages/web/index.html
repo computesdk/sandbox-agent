@@ -396,6 +396,31 @@
         flex-shrink: 0;
       }
 
+      .sidebar-header-actions {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+
+      .sidebar-icon-btn {
+        width: 24px;
+        height: 24px;
+        background: transparent;
+        border: 1px solid var(--border-2);
+        border-radius: 4px;
+        color: var(--muted);
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: all var(--transition);
+      }
+
+      .sidebar-icon-btn:hover {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+
       .sidebar-title {
         font-size: 11px;
         font-weight: 600;
@@ -493,16 +518,6 @@
         text-align: center;
         color: var(--muted);
         font-size: 11px;
-      }
-
-      .sidebar-refresh {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 4px;
-        padding: 8px;
-        border-top: 1px solid var(--border);
-        flex-shrink: 0;
       }
 
       /* Chat Panel */
