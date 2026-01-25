@@ -1,4 +1,8 @@
 import type { components } from "./generated/openapi.js";
+import type {
+  SandboxDaemonSpawnHandle,
+  SandboxDaemonSpawnOptions,
+} from "./spawn.js";
 
 export type AgentInstallRequest = components["schemas"]["AgentInstallRequest"];
 export type AgentModeInfo = components["schemas"]["AgentModeInfo"];
@@ -23,6 +27,14 @@ export interface SandboxDaemonClientOptions {
   token?: string;
   fetch?: typeof fetch;
   headers?: HeadersInit;
+}
+
+export interface SandboxDaemonConnectOptions {
+  baseUrl?: string;
+  token?: string;
+  fetch?: typeof fetch;
+  headers?: HeadersInit;
+  spawn?: SandboxDaemonSpawnOptions | boolean;
 }
 
 export class SandboxDaemonError extends Error {
@@ -53,6 +65,7 @@ export class SandboxDaemonClient {
   private readonly token?: string;
   private readonly fetcher: typeof fetch;
   private readonly defaultHeaders?: HeadersInit;
+  private spawnHandle?: SandboxDaemonSpawnHandle;
 
   constructor(options: SandboxDaemonClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
@@ -63,6 +76,32 @@ export class SandboxDaemonClient {
     if (!this.fetcher) {
       throw new Error("Fetch API is not available; provide a fetch implementation.");
     }
+  }
+
+  static async connect(options: SandboxDaemonConnectOptions): Promise<SandboxDaemonClient> {
+    const spawnOptions = normalizeSpawnOptions(options.spawn, !options.baseUrl);
+    if (!spawnOptions.enabled) {
+      if (!options.baseUrl) {
+        throw new Error("baseUrl is required when autospawn is disabled.");
+      }
+      return new SandboxDaemonClient({
+        baseUrl: options.baseUrl,
+        token: options.token,
+        fetch: options.fetch,
+        headers: options.headers,
+      });
+    }
+
+    const { spawnSandboxDaemon } = await import("./spawn.js");
+    const handle = await spawnSandboxDaemon(spawnOptions, options.fetch ?? globalThis.fetch);
+    const client = new SandboxDaemonClient({
+      baseUrl: handle.baseUrl,
+      token: handle.token,
+      fetch: options.fetch,
+      headers: options.headers,
+    });
+    client.spawnHandle = handle;
+    return client;
   }
 
   async listAgents(): Promise<AgentListResponse> {
@@ -171,6 +210,13 @@ export class SandboxDaemonClient {
     );
   }
 
+  async dispose(): Promise<void> {
+    if (this.spawnHandle) {
+      await this.spawnHandle.dispose();
+      this.spawnHandle = undefined;
+    }
+  }
+
   private async requestJson<T>(method: string, path: string, options: RequestOptions = {}): Promise<T> {
     const response = await this.requestRaw(method, path, {
       query: options.query,
@@ -251,4 +297,23 @@ export class SandboxDaemonClient {
 
 export const createSandboxDaemonClient = (options: SandboxDaemonClientOptions): SandboxDaemonClient => {
   return new SandboxDaemonClient(options);
+};
+
+export const connectSandboxDaemonClient = (
+  options: SandboxDaemonConnectOptions,
+): Promise<SandboxDaemonClient> => {
+  return SandboxDaemonClient.connect(options);
+};
+
+const normalizeSpawnOptions = (
+  spawn: SandboxDaemonSpawnOptions | boolean | undefined,
+  defaultEnabled: boolean,
+): SandboxDaemonSpawnOptions => {
+  if (typeof spawn === "boolean") {
+    return { enabled: spawn };
+  }
+  if (spawn) {
+    return { enabled: spawn.enabled ?? defaultEnabled, ...spawn };
+  }
+  return { enabled: defaultEnabled };
 };

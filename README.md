@@ -8,6 +8,12 @@ Universal API for running Claude Code, Codex, OpenCode, and Amp inside sandboxes
 - **Supports your sandbox provider**: Daytona, E2B, Vercel Sandboxes, and more
 - **Lightweight, portable Rust binary**: Install anywhere with 1 curl command
 
+## Architecture
+
+- TODO
+    - Embedded (runs agents locally)
+    - Sandboxed
+
 ## Project Goals
 
 This project aims to solve 3 problems with agents:

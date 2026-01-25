@@ -31,6 +31,24 @@ await client.postMessage("my-session", { message: "Hello" });
 const events = await client.getEvents("my-session", { offset: 0, limit: 50 });
 ```
 
+## Autospawn (Node only)
+
+```ts
+import { connectSandboxDaemonClient } from "sandbox-agent";
+
+const client = await connectSandboxDaemonClient({
+  spawn: { enabled: true },
+});
+
+await client.createSession("my-session", { agent: "claude" });
+await client.postMessage("my-session", { message: "Hello" });
+
+await client.dispose();
+```
+
+Autospawn uses the local `sandbox-agent` binary. Install `@sandbox-agent/cli` (recommended), or
+set `SANDBOX_AGENT_BIN` to the binary path.
+
 ## Endpoint mapping
 
 <details>

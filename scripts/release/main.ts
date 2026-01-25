@@ -317,7 +317,7 @@ function publishCrates(rootDir: string, version: string) {
 
   for (const crate of CRATE_ORDER) {
     console.log(`==> Publishing sandbox-agent-${crate}`);
-    const crateDir = path.join(rootDir, "engine", "packages", crate);
+    const crateDir = path.join(rootDir, "server", "packages", crate);
     run("cargo", ["publish", "--allow-dirty"], { cwd: crateDir });
     // Wait for crates.io index propagation
     console.log("Waiting 30s for index...");
