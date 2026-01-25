@@ -8,35 +8,7 @@ Universal API for running Claude Code, Codex, OpenCode, and Amp inside sandboxes
 - **Supports your sandbox provider**: Daytona, E2B, Vercel Sandboxes, and more
 - **Lightweight, portable Rust binary**: Install anywhere with 1 curl command
 
-Documentation lives in `docs/` (Mintlify). Start with:
-
-- `docs/index.mdx` for the overview
-- `docs/quickstart.mdx` to run the daemon
-- `docs/http-api.mdx` and `docs/cli.mdx` for API references
-
-Quickstart (local dev):
-
-```bash
-sandbox-agent --token "$SANDBOX_TOKEN" --host 127.0.0.1 --port 2468
-```
-
-Extract API keys from local agent configs (Claude Code, Codex, OpenCode, Amp):
-
-```bash
-# Print env vars
-sandbox-agent credentials extract-env
-
-# Export to current shell
-eval "$(sandbox-agent credentials extract-env --export)"
-```
-
-Run the web console (includes all dependencies):
-
-```bash
-pnpm dev -F @sandbox-agent/web
-```
-
-## Project Scope
+## Project Goals
 
 This project aims to solve 3 problems with agents:
 
