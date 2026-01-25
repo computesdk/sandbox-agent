@@ -18,6 +18,7 @@
 - [x] Implement offset semantics for events (exclusive last-seen id, default offset 0)
 - [x] Implement SSE endpoint for events with same semantics as JSON endpoint
 - [x] Replace in-memory session store with sandbox session manager (questions/permissions routing, long-lived processes)
+- [x] Remove legacy token header support
 
 ## CLI
 - [x] Implement clap CLI flags: `--token`, `--no-token`, `--host`, `--port`, CORS flags

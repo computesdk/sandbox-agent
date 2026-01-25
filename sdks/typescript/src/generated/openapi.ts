@@ -19,6 +19,9 @@ export interface paths {
   "/v1/agents/{agent}/modes": {
     get: operations["get_agent_modes"];
   };
+  "/v1/health": {
+    get: operations["get_health"];
+  };
   "/v1/sessions/{session_id}": {
     post: operations["create_session"];
   };
@@ -116,6 +119,9 @@ export interface components {
     EventsResponse: {
       events: components["schemas"]["UniversalEvent"][];
       hasMore: boolean;
+    };
+    HealthResponse: {
+      status: string;
     };
     MessageRequest: {
       message: string;
@@ -339,6 +345,15 @@ export interface operations {
       400: {
         content: {
           "application/json": components["schemas"]["ProblemDetails"];
+        };
+      };
+    };
+  };
+  get_health: {
+    responses: {
+      200: {
+        content: {
+          "application/json": components["schemas"]["HealthResponse"];
         };
       };
     };

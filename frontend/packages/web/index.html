@@ -103,7 +103,13 @@
         gap: 12px;
       }
 
-      .status-indicator {
+      .header-endpoint {
+        font-family: ui-monospace, SFMono-Regular, 'SF Mono', Consolas, monospace;
+        font-size: 11px;
+        color: var(--muted);
+      }
+
+      .status-indicator.disconnected {
         display: flex;
         align-items: center;
         gap: 8px;
@@ -113,14 +119,6 @@
         border: 1px solid var(--border-2);
         font-size: 11px;
         font-weight: 600;
-      }
-
-      .status-indicator.connected {
-        color: var(--success);
-        border-color: rgba(48, 209, 88, 0.3);
-      }
-
-      .status-indicator.disconnected {
         color: var(--muted);
       }
 
@@ -388,7 +386,8 @@
       }
 
       .panel-header {
-        padding: 10px 16px;
+        height: 41px;
+        padding: 0 16px;
         border-bottom: 1px solid var(--border);
         background: var(--surface-2);
         flex-shrink: 0;
@@ -412,13 +411,41 @@
         color: var(--muted);
       }
 
-      .session-badge {
+      .session-input {
         font-family: ui-monospace, SFMono-Regular, 'SF Mono', Consolas, monospace;
-        font-size: 11px;
-        color: var(--text-secondary);
+        font-size: 12px;
+        color: var(--text);
         background: var(--surface);
-        padding: 3px 8px;
+        border: 1px solid var(--border-2);
+        padding: 4px 10px;
         border-radius: 4px;
+        outline: none;
+        width: 140px;
+        transition: border-color var(--transition);
+      }
+
+      .session-input:focus {
+        border-color: var(--accent);
+      }
+
+      .session-input::placeholder {
+        color: var(--muted-2);
+      }
+
+      .session-new-btn {
+        background: var(--accent);
+        border: none;
+        border-radius: 4px;
+        padding: 4px 10px;
+        font-size: 11px;
+        font-weight: 600;
+        color: #fff;
+        cursor: pointer;
+        transition: background var(--transition);
+      }
+
+      .session-new-btn:hover {
+        background: var(--accent-hover);
       }
 
       .messages-container {
@@ -517,6 +544,16 @@
         border-bottom-left-radius: 4px;
       }
 
+      .message-error {
+        background: rgba(255, 59, 48, 0.1);
+        border: 1px solid rgba(255, 59, 48, 0.3);
+        border-radius: var(--radius-sm);
+        padding: 10px 14px;
+        color: var(--danger);
+        font-size: 12px;
+        margin-top: 8px;
+      }
+
       .cursor {
         display: inline-block;
         width: 2px;
@@ -601,6 +638,143 @@
         height: 16px;
       }
 
+      /* Setup Row */
+      .setup-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        background: var(--surface-2);
+        border-top: 1px solid var(--border);
+        flex-shrink: 0;
+        flex-wrap: wrap;
+      }
+
+      .setup-select {
+        background: var(--surface);
+        border: 1px solid var(--border-2);
+        border-radius: 4px;
+        padding: 4px 8px;
+        font-size: 11px;
+        color: var(--text);
+        cursor: pointer;
+        outline: none;
+        min-width: 70px;
+      }
+
+      .setup-select:focus {
+        border-color: var(--accent);
+      }
+
+      .setup-input {
+        background: var(--surface);
+        border: 1px solid var(--border-2);
+        border-radius: 4px;
+        padding: 4px 8px;
+        font-size: 11px;
+        color: var(--text);
+        outline: none;
+        width: 70px;
+      }
+
+      .setup-input-wide {
+        background: var(--surface);
+        border: 1px solid var(--border-2);
+        border-radius: 4px;
+        padding: 4px 8px;
+        font-size: 11px;
+        font-family: ui-monospace, SFMono-Regular, 'SF Mono', Consolas, monospace;
+        color: var(--text);
+        outline: none;
+        width: 120px;
+      }
+
+      .setup-input::placeholder,
+      .setup-input-wide::placeholder {
+        color: var(--muted-2);
+      }
+
+      .setup-input:focus,
+      .setup-input-wide:focus {
+        border-color: var(--accent);
+      }
+
+      .setup-new-btn {
+        background: var(--accent);
+        border: none;
+        border-radius: 4px;
+        padding: 4px 10px;
+        font-size: 11px;
+        font-weight: 600;
+        color: #fff;
+        cursor: pointer;
+        transition: background var(--transition);
+      }
+
+      .setup-new-btn:hover {
+        background: var(--accent-hover);
+      }
+
+      .setup-divider {
+        width: 1px;
+        height: 16px;
+        background: var(--border-2);
+        margin: 0 4px;
+      }
+
+      .setup-stream {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+
+      .setup-select-small {
+        background: var(--surface);
+        border: 1px solid var(--border-2);
+        border-radius: 4px;
+        padding: 4px 6px;
+        font-size: 10px;
+        color: var(--text);
+        cursor: pointer;
+        outline: none;
+        width: 50px;
+      }
+
+      .setup-stream-btn {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 24px;
+        height: 24px;
+        background: var(--surface);
+        border: 1px solid var(--border-2);
+        border-radius: 4px;
+        color: var(--muted);
+        cursor: pointer;
+        transition: all var(--transition);
+      }
+
+      .setup-stream-btn:hover {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+
+      .setup-stream-btn.active {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #fff;
+      }
+
+      .setup-version {
+        font-size: 10px;
+        color: var(--muted);
+        font-family: ui-monospace, SFMono-Regular, 'SF Mono', Consolas, monospace;
+        background: var(--surface);
+        padding: 4px 8px;
+        border-radius: 4px;
+        margin-left: auto;
+      }
+
       /* Debug Panel */
       .debug-panel {
         display: flex;
@@ -610,6 +784,7 @@
 
       .debug-tabs {
         display: flex;
+        height: 41px;
         border-bottom: 1px solid var(--border);
         background: var(--surface-2);
         flex-shrink: 0;
@@ -617,7 +792,8 @@
       }
 
       .debug-tab {
-        padding: 10px 16px;
+        height: 100%;
+        padding: 0 16px;
         font-size: 11px;
         font-weight: 600;
         text-transform: uppercase;
@@ -629,6 +805,8 @@
         cursor: pointer;
         transition: color var(--transition), border-color var(--transition);
         white-space: nowrap;
+        display: flex;
+        align-items: center;
       }
 
       .debug-tab:hover {

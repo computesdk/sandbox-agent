@@ -137,6 +137,26 @@
         }
       }
     },
+    "/v1/health": {
+      "get": {
+        "tags": [
+          "meta"
+        ],
+        "operationId": "get_health",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/sessions/{session_id}": {
       "post": {
         "tags": [
@@ -789,6 +809,17 @@
           }
         }
       },
+      "HealthResponse": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string"
+          }
+        }
+      },
       "MessageRequest": {
         "type": "object",
         "required": [
@@ -1405,6 +1436,10 @@
     }
   },
   "tags": [
+    {
+      "name": "meta",
+      "description": "Service metadata"
+    },
     {
       "name": "agents",
       "description": "Agent management"

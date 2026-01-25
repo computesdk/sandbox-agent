@@ -1,17 +1,16 @@
 import {
-  AlertCircle,
-  CheckCircle2,
   Clipboard,
   Cloud,
   Download,
   HelpCircle,
+  MessageSquare,
   PauseCircle,
   PlayCircle,
-  PlugZap,
   RefreshCw,
   Send,
   Shield,
-  TerminalSquare
+  Terminal,
+  Zap
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -106,6 +105,8 @@ type RequestLog = {
   error?: string;
 };
 
+type DebugTab = "log" | "events" | "approvals" | "agents";
+
 const defaultAgents = ["claude", "codex", "opencode", "amp"];
 
 const buildUrl = (endpoint: string, path: string, query?: Record<string, string>) => {
@@ -123,9 +124,7 @@ const buildUrl = (endpoint: string, path: string, query?: Record<string, string>
 };
 
 const safeJson = (text: string) => {
-  if (!text) {
-    return null;
-  }
+  if (!text) return null;
   try {
     return JSON.parse(text);
   } catch {
@@ -134,12 +133,8 @@ const safeJson = (text: string) => {
 };
 
 const formatJson = (value: unknown) => {
-  if (value === null || value === undefined) {
-    return "";
-  }
-  if (typeof value === "string") {
-    return value;
-  }
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value;
   try {
     return JSON.stringify(value, null, 2);
   } catch {
@@ -190,13 +185,11 @@ export default function App() {
   const [modesByAgent, setModesByAgent] = useState<Record<string, AgentMode[]>>({});
 
   const [agentId, setAgentId] = useState("claude");
-  const [agentMode, setAgentMode] = useState("build");
+  const [agentMode, setAgentMode] = useState("");
   const [permissionMode, setPermissionMode] = useState("default");
   const [model, setModel] = useState("");
   const [variant, setVariant] = useState("");
-  const [agentVersion, setAgentVersion] = useState("");
   const [sessionId, setSessionId] = useState("demo-session");
-  const [sessionInfo, setSessionInfo] = useState<{ healthy: boolean; agentSessionId?: string } | null>(null);
   const [sessionError, setSessionError] = useState<string | null>(null);
 
   const [message, setMessage] = useState("");
@@ -217,6 +210,10 @@ export default function App() {
   const [requestLog, setRequestLog] = useState<RequestLog[]>([]);
   const logIdRef = useRef(1);
   const [copiedLogId, setCopiedLogId] = useState<number | null>(null);
+
+  const [debugTab, setDebugTab] = useState<DebugTab>("log");
+
+  const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const logRequest = useCallback((entry: RequestLog) => {
     setRequestLog((prev) => {
@@ -303,7 +300,6 @@ export default function App() {
 
   const disconnect = () => {
     setConnected(false);
-    setSessionInfo(null);
     setSessionError(null);
     setEvents([]);
     setOffset(0);
@@ -316,7 +312,14 @@ export default function App() {
   const refreshAgents = async () => {
     try {
       const data = await apiFetch(`${API_PREFIX}/agents`);
-      setAgents((data as { agents?: AgentInfo[] })?.agents ?? []);
+      const agentList = (data as { agents?: AgentInfo[] })?.agents ?? [];
+      setAgents(agentList);
+      // Auto-load modes for installed agents
+      for (const agent of agentList) {
+        if (agent.installed) {
+          loadModes(agent.id);
+        }
+      }
     } catch (error) {
       setConnectError(error instanceof Error ? error.message : "Unable to refresh agents");
     }
@@ -339,8 +342,27 @@ export default function App() {
       const data = await apiFetch(`${API_PREFIX}/agents/${targetId}/modes`);
       const modes = (data as { modes?: AgentMode[] })?.modes ?? [];
       setModesByAgent((prev) => ({ ...prev, [targetId]: modes }));
+    } catch {
+      // Silently fail - modes are optional
+    }
+  };
+
+  const sendMessage = async () => {
+    if (!message.trim()) return;
+    setSessionError(null);
+    try {
+      await apiFetch(`${API_PREFIX}/sessions/${sessionId}/messages`, {
+        method: "POST",
+        body: { message }
+      });
+      setMessage("");
+
+      // Auto-start polling if not already
+      if (!polling && streamMode === "poll") {
+        startPolling();
+      }
     } catch (error) {
-      setConnectError(error instanceof Error ? error.message : "Unable to load modes");
+      setSessionError(error instanceof Error ? error.message : "Unable to send message");
     }
   };
 
@@ -352,33 +374,13 @@ export default function App() {
       if (permissionMode) body.permissionMode = permissionMode;
       if (model) body.model = model;
       if (variant) body.variant = variant;
-      if (agentVersion) body.agentVersion = agentVersion;
-      const data = await apiFetch(`${API_PREFIX}/sessions/${sessionId}`, {
+
+      await apiFetch(`${API_PREFIX}/sessions/${sessionId}`, {
         method: "POST",
         body
       });
-      const response = data as { healthy?: boolean; agentSessionId?: string };
-      setSessionInfo({ healthy: Boolean(response.healthy), agentSessionId: response.agentSessionId });
-      setEvents([]);
-      setOffset(0);
-      offsetRef.current = 0;
-      setEventError(null);
     } catch (error) {
       setSessionError(error instanceof Error ? error.message : "Unable to create session");
-      setSessionInfo(null);
-    }
-  };
-
-  const sendMessage = async () => {
-    if (!message.trim()) return;
-    try {
-      await apiFetch(`${API_PREFIX}/sessions/${sessionId}/messages`, {
-        method: "POST",
-        body: { message }
-      });
-      setMessage("");
-    } catch (error) {
-      setEventError(error instanceof Error ? error.message : "Unable to send message");
     }
   };
 
@@ -552,10 +554,16 @@ export default function App() {
       .filter((request) => !permissionStatus[request.id]);
   }, [events, permissionStatus]);
 
-  const transcriptEvents = useMemo(() => {
-    return events.filter(
-      (event): event is UniversalEvent & { data: { message: UniversalMessage } } => "message" in event.data
-    );
+  const transcriptMessages = useMemo(() => {
+    return events
+      .filter((event): event is UniversalEvent & { data: { message: UniversalMessage } } => "message" in event.data)
+      .map((event) => ({
+        id: event.id,
+        role: event.data.message?.role ?? "assistant",
+        content: event.data.message?.content ?? "",
+        timestamp: event.timestamp
+      }))
+      .filter((msg) => msg.content);
   }, [events]);
 
   useEffect(() => {
@@ -570,526 +578,595 @@ export default function App() {
     refreshAgents();
   }, [connected]);
 
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [transcriptMessages]);
+
+  // Auto-load modes when agent changes
+  useEffect(() => {
+    if (connected && agentId && !modesByAgent[agentId]) {
+      loadModes(agentId);
+    }
+  }, [connected, agentId]);
+
+  // Set default mode when modes are loaded
+  useEffect(() => {
+    const modes = modesByAgent[agentId];
+    if (modes && modes.length > 0 && !agentMode) {
+      setAgentMode(modes[0].id);
+    }
+  }, [modesByAgent, agentId]);
+
   const availableAgents = agents.length ? agents.map((agent) => agent.id) : defaultAgents;
+  const currentAgent = agents.find((a) => a.id === agentId);
   const activeModes = modesByAgent[agentId] ?? [];
+  const pendingApprovals = questionRequests.length + permissionRequests.length;
 
-  return (
-    <div className="app">
-      <header className="app-header">
-        <div className="brand">
-          <span className="brand-mark" />
-          Sandbox Agent Console
-        </div>
-        <div className="inline-row">
-          <span className={`status-pill ${connected ? "success" : "warning"}`}>
-            <span className="status-dot" />
-            {connected ? "Connected" : "Disconnected"}
-          </span>
-          {connected && (
-            <button className="button secondary" onClick={disconnect} type="button">
-              Disconnect
-            </button>
-          )}
-        </div>
-      </header>
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  };
 
-      {!connected ? (
-        <main className="connect-screen">
-          <section className="connect-hero reveal">
-            <div className="hero-title">Bring the agent fleet online.</div>
-            <div className="hero-subtitle">
-              Point this console at a running sandbox-agent, then manage sessions, messages, and approvals in
-              one place.
+  const toggleStream = () => {
+    if (polling) {
+      stopPolling();
+    } else if (streamMode === "poll") {
+      startPolling();
+    } else {
+      startSse();
+    }
+  };
+
+  if (!connected) {
+    return (
+      <div className="app">
+        <header className="header">
+          <div className="header-left">
+            <div className="logo">SA</div>
+            <span className="header-title">Sandbox Agent</span>
+          </div>
+          <div className="header-right">
+            <div className="status-indicator disconnected">
+              <span className="status-dot" />
+              Disconnected
             </div>
-            <div className="callout mono">
-              sandbox-agent --host 0.0.0.0 --port 2468 --token &lt;token&gt; --cors-allow-origin
-              http://localhost:5173 --cors-allow-method GET --cors-allow-method POST --cors-allow-header Authorization
-              --cors-allow-header Content-Type
+          </div>
+        </header>
+
+        <main className="landing">
+          <div className="landing-container">
+            <div className="landing-hero">
+              <div className="landing-logo">SA</div>
+              <h1 className="landing-title">Sandbox Agent</h1>
+              <p className="landing-subtitle">
+                Universal API for running Claude Code, Codex, OpenCode, and Amp inside sandboxes.
+              </p>
             </div>
-            <div className="tag-list">
-              <span className="pill">CORS required for browser access</span>
-              <span className="pill neutral">Token optional with --no-token</span>
-              <span className="pill">HTTP API under /v1</span>
-            </div>
-            <div className="muted">
-              If you see a network or CORS error, make sure CORS flags are enabled in the daemon CLI.
-            </div>
-          </section>
-          <section className="panel reveal">
-            <div className="panel-header">
-              <span className="inline-row">
-                <PlugZap className="button-icon" />
-                Connect
-              </span>
-            </div>
-            <div className="panel-body">
+
+            <div className="connect-card">
+              <div className="connect-card-title">Connect to Daemon</div>
+
+              {connectError && (
+                <div className="banner error">{connectError}</div>
+              )}
+
               <label className="field">
                 <span className="label">Endpoint</span>
                 <input
                   className="input"
+                  type="text"
                   placeholder="http://localhost:2468"
                   value={endpoint}
-                  onChange={(event) => setEndpoint(event.target.value)}
+                  onChange={(e) => setEndpoint(e.target.value)}
                 />
               </label>
+
               <label className="field">
                 <span className="label">Token (optional)</span>
                 <input
                   className="input"
-                  placeholder="token"
+                  type="password"
+                  placeholder="Bearer token"
                   value={token}
-                  onChange={(event) => setToken(event.target.value)}
+                  onChange={(e) => setToken(e.target.value)}
                 />
               </label>
-              {connectError && (
-                <div className="banner">
-                  <strong>Connection failed:</strong> {connectError}
-                  <div className="muted">If this is a CORS error, enable CORS flags on the daemon.</div>
-                </div>
-              )}
-              <button className="button primary" onClick={connect} disabled={connecting} type="button">
+
+              <button
+                className="button primary"
+                onClick={connect}
+                disabled={connecting}
+              >
                 {connecting ? (
-                  <span className="inline-row">
-                    <span className="spinner" /> Connecting
-                  </span>
+                  <>
+                    <span className="spinner" />
+                    Connecting...
+                  </>
                 ) : (
-                  "Connect"
+                  <>
+                    <Zap className="button-icon" />
+                    Connect
+                  </>
                 )}
               </button>
+
+              <p className="hint">
+                Start the daemon with CORS enabled for browser access:<br />
+                <code>sandbox-agent --cors-allow-origin http://localhost:5173</code>
+              </p>
             </div>
-          </section>
+          </div>
         </main>
-      ) : (
-        <main className="grid">
-          <section className="panel reveal">
-            <div className="panel-header">
-              <span className="inline-row">
-                <Cloud className="button-icon" />
-                Agents
-              </span>
-              <button className="button ghost" type="button" onClick={refreshAgents}>
-                <RefreshCw className="button-icon" /> Refresh
+      </div>
+    );
+  }
+
+  return (
+    <div className="app">
+      <header className="header">
+        <div className="header-left">
+          <div className="logo">SA</div>
+          <span className="header-title">Sandbox Agent</span>
+        </div>
+        <div className="header-right">
+          <span className="header-endpoint">{endpoint}</span>
+          <button className="button secondary small" onClick={disconnect}>
+            Disconnect
+          </button>
+        </div>
+      </header>
+
+      <main className="main-layout">
+        {/* Chat Panel - Left */}
+        <div className="chat-panel">
+          <div className="panel-header">
+            <div className="panel-header-left">
+              <MessageSquare className="button-icon" />
+              <span className="panel-title">Session</span>
+              <input
+                className="session-input"
+                value={sessionId}
+                onChange={(e) => setSessionId(e.target.value)}
+                placeholder="session-id"
+              />
+              <button
+                className="session-new-btn"
+                onClick={createSession}
+                title="Create new session"
+              >
+                New
               </button>
             </div>
-            <div className="panel-body">
-              {agents.length === 0 && <div className="muted">No agents reported yet. Refresh when ready.</div>}
-              <div className="card-list">
+            {polling && (
+              <span className="pill accent">Live</span>
+            )}
+          </div>
+
+          <div className="messages-container">
+            {transcriptMessages.length === 0 && !sessionError ? (
+              <div className="empty-state">
+                <Terminal className="empty-state-icon" />
+                <div className="empty-state-title">Ready to Chat</div>
+                <p className="empty-state-text">
+                  Send a message to start a conversation with the agent.
+                </p>
+              </div>
+            ) : (
+              <div className="messages">
+                {transcriptMessages.map((msg) => (
+                  <div key={msg.id} className={`message ${msg.role === "user" ? "user" : "assistant"}`}>
+                    <div className="avatar">
+                      {msg.role === "user" ? "U" : "AI"}
+                    </div>
+                    <div className="message-content">
+                      {msg.content}
+                    </div>
+                  </div>
+                ))}
+                {sessionError && (
+                  <div className="message-error">
+                    {sessionError}
+                  </div>
+                )}
+                <div ref={messagesEndRef} />
+              </div>
+            )}
+          </div>
+
+          {/* Input Area */}
+          <div className="input-container">
+            <div className="input-wrapper">
+              <textarea
+                value={message}
+                onChange={(e) => setMessage(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="Send a message..."
+                rows={1}
+              />
+              <button
+                className="send-button"
+                onClick={sendMessage}
+                disabled={!message.trim()}
+              >
+                <Send />
+              </button>
+            </div>
+          </div>
+
+          {/* Setup Controls Row */}
+          <div className="setup-row">
+            <select
+              className="setup-select"
+              value={agentId}
+              onChange={(e) => setAgentId(e.target.value)}
+              title="Agent"
+            >
+              {availableAgents.map((id) => (
+                <option key={id} value={id}>{id}</option>
+              ))}
+            </select>
+
+            <select
+              className="setup-select"
+              value={agentMode}
+              onChange={(e) => setAgentMode(e.target.value)}
+              title="Mode"
+            >
+              {activeModes.length > 0 ? (
+                activeModes.map((mode) => (
+                  <option key={mode.id} value={mode.id}>{mode.name || mode.id}</option>
+                ))
+              ) : (
+                <option value="">mode</option>
+              )}
+            </select>
+
+            <select
+              className="setup-select"
+              value={permissionMode}
+              onChange={(e) => setPermissionMode(e.target.value)}
+              title="Permission Mode"
+            >
+              <option value="default">default</option>
+              <option value="plan">plan</option>
+              <option value="bypass">bypass</option>
+            </select>
+
+            <input
+              className="setup-input"
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              placeholder="model"
+              title="Model"
+            />
+
+            <input
+              className="setup-input"
+              value={variant}
+              onChange={(e) => setVariant(e.target.value)}
+              placeholder="variant"
+              title="Variant"
+            />
+
+            <div className="setup-stream">
+              <select
+                className="setup-select-small"
+                value={streamMode}
+                onChange={(e) => setStreamMode(e.target.value as "poll" | "sse")}
+                title="Stream Mode"
+              >
+                <option value="poll">poll</option>
+                <option value="sse">sse</option>
+              </select>
+              <button
+                className={`setup-stream-btn ${polling ? "active" : ""}`}
+                onClick={toggleStream}
+                title={polling ? "Stop streaming" : "Start streaming"}
+              >
+                {polling ? <PauseCircle size={14} /> : <PlayCircle size={14} />}
+              </button>
+            </div>
+
+            {currentAgent?.version && (
+              <span className="setup-version" title="Installed version">
+                v{currentAgent.version}
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Debug Panel - Right */}
+        <div className="debug-panel">
+          <div className="debug-tabs">
+            <button
+              className={`debug-tab ${debugTab === "log" ? "active" : ""}`}
+              onClick={() => setDebugTab("log")}
+            >
+              <Terminal className="button-icon" style={{ marginRight: 4, width: 12, height: 12 }} />
+              Log
+            </button>
+            <button
+              className={`debug-tab ${debugTab === "events" ? "active" : ""}`}
+              onClick={() => setDebugTab("events")}
+            >
+              <PlayCircle className="button-icon" style={{ marginRight: 4, width: 12, height: 12 }} />
+              Events
+              {events.length > 0 && (
+                <span className="debug-tab-badge">{events.length}</span>
+              )}
+            </button>
+            <button
+              className={`debug-tab ${debugTab === "approvals" ? "active" : ""}`}
+              onClick={() => setDebugTab("approvals")}
+            >
+              <Shield className="button-icon" style={{ marginRight: 4, width: 12, height: 12 }} />
+              Approvals
+              {pendingApprovals > 0 && (
+                <span className="debug-tab-badge">{pendingApprovals}</span>
+              )}
+            </button>
+            <button
+              className={`debug-tab ${debugTab === "agents" ? "active" : ""}`}
+              onClick={() => setDebugTab("agents")}
+            >
+              <Cloud className="button-icon" style={{ marginRight: 4, width: 12, height: 12 }} />
+              Agents
+            </button>
+          </div>
+
+          <div className="debug-content">
+            {/* Log Tab */}
+            {debugTab === "log" && (
+              <>
+                <div className="inline-row" style={{ marginBottom: 12, justifyContent: "space-between" }}>
+                  <span className="card-meta">{requestLog.length} requests</span>
+                  <button className="button ghost small" onClick={() => setRequestLog([])}>
+                    Clear
+                  </button>
+                </div>
+
+                {requestLog.length === 0 ? (
+                  <div className="card-meta">No requests logged yet.</div>
+                ) : (
+                  requestLog.map((entry) => (
+                    <div key={entry.id} className="log-item">
+                      <span className="log-method">{entry.method}</span>
+                      <span className="log-url text-truncate">{entry.url}</span>
+                      <span className={`log-status ${entry.status && entry.status < 400 ? "ok" : "error"}`}>
+                        {entry.status || "ERR"}
+                      </span>
+                      <div className="log-meta">
+                        <span>{entry.time}{entry.error && ` - ${entry.error}`}</span>
+                        <button className="copy-button" onClick={() => handleCopy(entry)}>
+                          <Clipboard />
+                          {copiedLogId === entry.id ? "Copied" : "curl"}
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </>
+            )}
+
+            {/* Events Tab */}
+            {debugTab === "events" && (
+              <>
+                <div className="inline-row" style={{ marginBottom: 12, justifyContent: "space-between" }}>
+                  <span className="card-meta">Offset: {offset}</span>
+                  <div className="inline-row">
+                    <button className="button ghost small" onClick={fetchEvents}>
+                      Fetch
+                    </button>
+                    <button className="button ghost small" onClick={resetEvents}>
+                      Clear
+                    </button>
+                  </div>
+                </div>
+
+                {events.length === 0 ? (
+                  <div className="card-meta">No events yet. Start streaming to receive events.</div>
+                ) : (
+                  <div className="event-list">
+                    {events.map((event) => {
+                      const type = getEventType(event);
+                      return (
+                        <div key={event.id} className="event-item">
+                          <div className="event-header">
+                            <span className={`event-type ${type}`}>{type}</span>
+                            <span className="event-time">{formatTime(event.timestamp)}</span>
+                          </div>
+                          <div className="event-id">Event #{event.id}</div>
+                          <pre className="code-block">{formatJson(event.data)}</pre>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* Approvals Tab */}
+            {debugTab === "approvals" && (
+              <>
+                {questionRequests.length === 0 && permissionRequests.length === 0 ? (
+                  <div className="card-meta">No pending approvals.</div>
+                ) : (
+                  <>
+                    {questionRequests.map((request) => {
+                      const selections = questionSelections[request.id] ?? [];
+                      const answeredAll = request.questions.every((q, idx) => {
+                        const answer = selections[idx] ?? [];
+                        return answer.length > 0;
+                      });
+                      return (
+                        <div key={request.id} className="card">
+                          <div className="card-header">
+                            <span className="card-title">
+                              <HelpCircle className="button-icon" style={{ marginRight: 6 }} />
+                              Question
+                            </span>
+                            <span className="pill accent">Pending</span>
+                          </div>
+                          {request.questions.map((question, qIdx) => (
+                            <div key={qIdx} style={{ marginTop: 12 }}>
+                              <div style={{ fontSize: 12, marginBottom: 8 }}>
+                                {question.header && <strong>{question.header}: </strong>}
+                                {question.question}
+                              </div>
+                              <div className="option-list">
+                                {question.options.map((option) => {
+                                  const selected = selections[qIdx]?.includes(option.label) ?? false;
+                                  return (
+                                    <label key={option.label} className="option-item">
+                                      <input
+                                        type={question.multiSelect ? "checkbox" : "radio"}
+                                        checked={selected}
+                                        onChange={() =>
+                                          toggleQuestionOption(
+                                            request.id,
+                                            qIdx,
+                                            option.label,
+                                            Boolean(question.multiSelect)
+                                          )
+                                        }
+                                      />
+                                      <span>
+                                        {option.label}
+                                        {option.description && (
+                                          <span className="muted"> - {option.description}</span>
+                                        )}
+                                      </span>
+                                    </label>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          ))}
+                          <div className="card-actions">
+                            <button
+                              className="button success small"
+                              disabled={!answeredAll}
+                              onClick={() => answerQuestion(request)}
+                            >
+                              Reply
+                            </button>
+                            <button
+                              className="button danger small"
+                              onClick={() => rejectQuestion(request.id)}
+                            >
+                              Reject
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+
+                    {permissionRequests.map((request) => (
+                      <div key={request.id} className="card">
+                        <div className="card-header">
+                          <span className="card-title">
+                            <Shield className="button-icon" style={{ marginRight: 6 }} />
+                            Permission
+                          </span>
+                          <span className="pill accent">Pending</span>
+                        </div>
+                        <div className="card-meta" style={{ marginTop: 8 }}>
+                          {request.permission}
+                        </div>
+                        {request.patterns && request.patterns.length > 0 && (
+                          <div className="mono muted" style={{ fontSize: 11, marginTop: 4 }}>
+                            {request.patterns.join(", ")}
+                          </div>
+                        )}
+                        {request.metadata && (
+                          <pre className="code-block">{formatJson(request.metadata)}</pre>
+                        )}
+                        <div className="card-actions">
+                          <button
+                            className="button success small"
+                            onClick={() => replyPermission(request.id, "once")}
+                          >
+                            Allow Once
+                          </button>
+                          <button
+                            className="button secondary small"
+                            onClick={() => replyPermission(request.id, "always")}
+                          >
+                            Always
+                          </button>
+                          <button
+                            className="button danger small"
+                            onClick={() => replyPermission(request.id, "reject")}
+                          >
+                            Reject
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </>
+                )}
+              </>
+            )}
+
+            {/* Agents Tab */}
+            {debugTab === "agents" && (
+              <>
+                <div className="inline-row" style={{ marginBottom: 16 }}>
+                  <button className="button secondary small" onClick={refreshAgents}>
+                    <RefreshCw className="button-icon" /> Refresh
+                  </button>
+                </div>
+
+                {agents.length === 0 && (
+                  <div className="card-meta">No agents reported. Click refresh to check.</div>
+                )}
+
                 {(agents.length ? agents : defaultAgents.map((id) => ({ id, installed: false }))).map((agent) => (
                   <div key={agent.id} className="card">
-                    <div className="inline-row">
+                    <div className="card-header">
                       <span className="card-title">{agent.id}</span>
                       <span className={`pill ${agent.installed ? "success" : "danger"}`}>
                         {agent.installed ? "Installed" : "Missing"}
                       </span>
                     </div>
                     <div className="card-meta">
-                      {agent.version ? `Version ${agent.version}` : "Version unknown"}
+                      {agent.version ? `v${agent.version}` : "Version unknown"}
+                      {agent.path && <span className="mono muted" style={{ marginLeft: 8 }}>{agent.path}</span>}
                     </div>
-                    {agent.path && <div className="mono muted">{agent.path}</div>}
-                    <div className="inline-row">
+                    {modesByAgent[agent.id] && modesByAgent[agent.id].length > 0 && (
+                      <div className="card-meta" style={{ marginTop: 8 }}>
+                        Modes: {modesByAgent[agent.id].map((m) => m.id).join(", ")}
+                      </div>
+                    )}
+                    <div className="card-actions">
                       <button
-                        className="button secondary"
-                        type="button"
+                        className="button secondary small"
                         onClick={() => installAgent(agent.id, false)}
                       >
                         <Download className="button-icon" /> Install
                       </button>
                       <button
-                        className="button ghost"
-                        type="button"
+                        className="button ghost small"
                         onClick={() => installAgent(agent.id, true)}
                       >
                         Reinstall
                       </button>
-                      <button className="button ghost" type="button" onClick={() => loadModes(agent.id)}>
+                      <button
+                        className="button ghost small"
+                        onClick={() => loadModes(agent.id)}
+                      >
                         Modes
                       </button>
                     </div>
-                    {modesByAgent[agent.id] && modesByAgent[agent.id].length > 0 && (
-                      <div className="stack">
-                        {modesByAgent[agent.id].map((mode) => (
-                          <div key={mode.id} className="card-meta">
-                            <strong>{mode.name}</strong> - {mode.description ?? mode.id}
-                          </div>
-                        ))}
-                      </div>
-                    )}
                   </div>
                 ))}
-              </div>
-            </div>
-          </section>
-
-          <section className="panel reveal" style={{ animationDelay: "0.05s" }}>
-            <div className="panel-header">
-              <span className="inline-row">
-                <TerminalSquare className="button-icon" />
-                Session Setup
-              </span>
-            </div>
-            <div className="panel-body">
-              <label className="field">
-                <span className="label">Session Id</span>
-                <input className="input" value={sessionId} onChange={(event) => setSessionId(event.target.value)} />
-              </label>
-              <label className="field">
-                <span className="label">Agent</span>
-                <select className="select" value={agentId} onChange={(event) => setAgentId(event.target.value)}>
-                  {availableAgents.map((id) => (
-                    <option key={id} value={id}>
-                      {id}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="field">
-                <span className="label">Agent Mode</span>
-                <input
-                  className="input"
-                  value={agentMode}
-                  onChange={(event) => setAgentMode(event.target.value)}
-                  placeholder="build"
-                />
-                {activeModes.length > 0 && (
-                  <div className="muted">Available modes: {activeModes.map((mode) => mode.id).join(", ")}</div>
-                )}
-              </label>
-              <label className="field">
-                <span className="label">Permission Mode</span>
-                <select
-                  className="select"
-                  value={permissionMode}
-                  onChange={(event) => setPermissionMode(event.target.value)}
-                >
-                  <option value="default">default</option>
-                  <option value="plan">plan</option>
-                  <option value="bypass">bypass</option>
-                </select>
-              </label>
-              <div className="inline-row">
-                <label className="field" style={{ flex: 1 }}>
-                  <span className="label">Model</span>
-                  <input className="input" value={model} onChange={(event) => setModel(event.target.value)} />
-                </label>
-                <label className="field" style={{ flex: 1 }}>
-                  <span className="label">Variant</span>
-                  <input className="input" value={variant} onChange={(event) => setVariant(event.target.value)} />
-                </label>
-              </div>
-              <label className="field">
-                <span className="label">Agent Version</span>
-                <input
-                  className="input"
-                  value={agentVersion}
-                  onChange={(event) => setAgentVersion(event.target.value)}
-                />
-              </label>
-              {sessionInfo && (
-                <div className={sessionInfo.healthy ? "success-banner" : "banner"}>
-                  {sessionInfo.healthy ? "Session ready." : "Session unhealthy."}
-                  {sessionInfo.agentSessionId && (
-                    <div className="mono muted">Agent session id: {sessionInfo.agentSessionId}</div>
-                  )}
-                </div>
-              )}
-              {sessionError && <div className="banner">{sessionError}</div>}
-              <button className="button primary" type="button" onClick={createSession}>
-                Create / Attach Session
-              </button>
-              <div className="muted">
-                Agent mode controls behavior. Permission mode controls what the agent can do.
-              </div>
-            </div>
-          </section>
-
-          <section className="panel reveal" style={{ animationDelay: "0.1s" }}>
-            <div className="panel-header">
-              <span className="inline-row">
-                <Send className="button-icon" />
-                Message
-              </span>
-              <span className="pill neutral">POST /sessions/:id/messages</span>
-            </div>
-            <div className="panel-body">
-              <label className="field">
-                <span className="label">Prompt</span>
-                <textarea
-                  className="textarea"
-                  value={message}
-                  onChange={(event) => setMessage(event.target.value)}
-                  placeholder="Ask the agent to do something..."
-                />
-              </label>
-              <div className="inline-row">
-                <button className="button primary" type="button" onClick={sendMessage}>
-                  Send Message
-                </button>
-                <button className="button ghost" type="button" onClick={fetchEvents}>
-                  Fetch Events
-                </button>
-              </div>
-              {eventError && <div className="banner">{eventError}</div>}
-            </div>
-          </section>
-
-          <section className="panel reveal" style={{ animationDelay: "0.15s" }}>
-            <div className="panel-header">
-              <span className="inline-row">
-                <HelpCircle className="button-icon" />
-                Questions
-              </span>
-            </div>
-            <div className="panel-body">
-              {questionRequests.length === 0 && <div className="muted">No pending questions.</div>}
-              <div className="card-list">
-                {questionRequests.map((request) => {
-                  const selections = questionSelections[request.id] ?? [];
-                  const answeredAll = request.questions.every((question, idx) => {
-                    const answer = selections[idx] ?? [];
-                    return answer.length > 0;
-                  });
-                  return (
-                    <div key={request.id} className="card">
-                      <div className="inline-row">
-                        <span className="card-title">Question {request.id}</span>
-                        <span className="pill">question.asked</span>
-                      </div>
-                      {request.questions.map((question, index) => (
-                        <div key={`${request.id}-${index}`} className="stack">
-                          <div className="card-meta">
-                            {question.header && <strong>{question.header}: </strong>}
-                            {question.question}
-                          </div>
-                          <div className="stack">
-                            {question.options.map((option) => {
-                              const selected = selections[index]?.includes(option.label) ?? false;
-                              return (
-                                <label key={option.label} className="inline-row" style={{ gap: "8px" }}>
-                                  <input
-                                    type={question.multiSelect ? "checkbox" : "radio"}
-                                    checked={selected}
-                                    onChange={() =>
-                                      toggleQuestionOption(
-                                        request.id,
-                                        index,
-                                        option.label,
-                                        Boolean(question.multiSelect)
-                                      )
-                                    }
-                                  />
-                                  <span>
-                                    {option.label}
-                                    {option.description ? ` - ${option.description}` : ""}
-                                  </span>
-                                </label>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      ))}
-                      <div className="inline-row">
-                        <button
-                          className="button success"
-                          type="button"
-                          disabled={!answeredAll}
-                          onClick={() => answerQuestion(request)}
-                        >
-                          Reply
-                        </button>
-                        <button className="button danger" type="button" onClick={() => rejectQuestion(request.id)}>
-                          Reject
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </section>
-
-          <section className="panel reveal" style={{ animationDelay: "0.2s" }}>
-            <div className="panel-header">
-              <span className="inline-row">
-                <Shield className="button-icon" />
-                Permissions
-              </span>
-            </div>
-            <div className="panel-body">
-              {permissionRequests.length === 0 && <div className="muted">No pending permissions.</div>}
-              <div className="card-list">
-                {permissionRequests.map((request) => (
-                  <div key={request.id} className="card">
-                    <div className="inline-row">
-                      <span className="card-title">Permission {request.id}</span>
-                      <span className="pill">permission.asked</span>
-                    </div>
-                    <div className="card-meta">{request.permission}</div>
-                    {request.patterns && request.patterns.length > 0 && (
-                      <div className="mono muted">{request.patterns.join(", ")}</div>
-                    )}
-                    {request.metadata && (
-                      <pre className="code-block mono">{formatJson(request.metadata)}</pre>
-                    )}
-                    <div className="inline-row">
-                      <button
-                        className="button success"
-                        type="button"
-                        onClick={() => replyPermission(request.id, "once")}
-                      >
-                        Allow Once
-                      </button>
-                      <button
-                        className="button secondary"
-                        type="button"
-                        onClick={() => replyPermission(request.id, "always")}
-                      >
-                        Allow Always
-                      </button>
-                      <button
-                        className="button danger"
-                        type="button"
-                        onClick={() => replyPermission(request.id, "reject")}
-                      >
-                        Reject
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </section>
-
-          <section className="panel reveal" style={{ animationDelay: "0.25s" }}>
-            <div className="panel-header">
-              <span className="inline-row">
-                <PlayCircle className="button-icon" />
-                Event Stream
-              </span>
-              <span className="pill neutral">GET /sessions/:id/events</span>
-            </div>
-            <div className="panel-body">
-              <div className="inline-row">
-                <label className="inline-row" style={{ gap: "8px" }}>
-                  <input
-                    type="radio"
-                    checked={streamMode === "poll"}
-                    onChange={() => setStreamMode("poll")}
-                  />
-                  Polling
-                </label>
-                <label className="inline-row" style={{ gap: "8px" }}>
-                  <input
-                    type="radio"
-                    checked={streamMode === "sse"}
-                    onChange={() => setStreamMode("sse")}
-                  />
-                  SSE
-                </label>
-              </div>
-              <div className="inline-row">
-                {streamMode === "poll" ? (
-                  polling ? (
-                    <button className="button secondary" type="button" onClick={stopPolling}>
-                      <PauseCircle className="button-icon" /> Stop Polling
-                    </button>
-                  ) : (
-                    <button className="button primary" type="button" onClick={startPolling}>
-                      <PlayCircle className="button-icon" /> Start Polling
-                    </button>
-                  )
-                ) : (
-                  <button className="button primary" type="button" onClick={startSse}>
-                    <PlayCircle className="button-icon" /> Start SSE
-                  </button>
-                )}
-                <button className="button ghost" type="button" onClick={() => (streamMode === "poll" ? stopPolling() : stopSse())}>
-                  Stop
-                </button>
-                <button className="button ghost" type="button" onClick={resetEvents}>
-                  Clear
-                </button>
-              </div>
-              <div className="muted">Offset: {offset}</div>
-              <div className="event-list">
-                {events.length === 0 && <div className="muted">No events yet.</div>}
-                {events.map((event) => {
-                  const type = getEventType(event);
-                  return (
-                    <div key={`${event.id}-${type}`} className="event-item">
-                      <div className="event-title">
-                        <span className="event-type">{type}</span>
-                        <span className="event-time">{formatTime(event.timestamp)}</span>
-                      </div>
-                      <div className="mono muted">Event {event.id}</div>
-                      <pre className="code-block mono">{formatJson(event.data)}</pre>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </section>
-
-          <section className="panel reveal" style={{ animationDelay: "0.3s" }}>
-            <div className="panel-header">
-              <span className="inline-row">
-                <CheckCircle2 className="button-icon" />
-                Transcript
-              </span>
-              <span className="pill neutral">Messages</span>
-            </div>
-            <div className="panel-body">
-              {transcriptEvents.length === 0 && <div className="muted">No messages captured yet.</div>}
-              <div className="event-list">
-                {transcriptEvents.map((event) => (
-                  <div key={`msg-${event.id}`} className="event-item">
-                    <div className="event-title">
-                      <span className="event-type">{event.data.message?.role ?? "message"}</span>
-                      <span className="event-time">{formatTime(event.timestamp)}</span>
-                    </div>
-                    <pre className="code-block mono">{formatJson(event.data.message)}</pre>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </section>
-
-          <section className="panel reveal" style={{ animationDelay: "0.35s" }}>
-            <div className="panel-header">
-              <span className="inline-row">
-                <AlertCircle className="button-icon" />
-                Request Log
-              </span>
-              <button className="button ghost" type="button" onClick={() => setRequestLog([])}>
-                Clear
-              </button>
-            </div>
-            <div className="panel-body">
-              <div className="log-list">
-                {requestLog.length === 0 && <div className="muted">No requests logged yet.</div>}
-                {requestLog.map((entry) => (
-                  <div key={entry.id} className="log-item">
-                    <div className="log-method">{entry.method}</div>
-                    <div className="log-url mono">{entry.url}</div>
-                    <div className={`log-status ${entry.status && entry.status < 400 ? "ok" : "error"}`}>
-                      {entry.status ?? "ERR"}
-                    </div>
-                    <div className="mono muted" style={{ gridColumn: "1 / -1" }}>
-                      {entry.time}
-                      {entry.error ? ` - ${entry.error}` : ""}
-                    </div>
-                    <div className="inline-row" style={{ gridColumn: "1 / -1", justifyContent: "flex-end" }}>
-                      <button className="copy-button" type="button" onClick={() => handleCopy(entry)}>
-                        <Clipboard className="button-icon" />
-                        {copiedLogId === entry.id ? "Copied" : "Copy curl"}
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </section>
-        </main>
-      )}
+              </>
+            )}
+          </div>
+        </div>
+      </main>
     </div>
   );
 }

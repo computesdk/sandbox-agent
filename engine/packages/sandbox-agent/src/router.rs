@@ -505,6 +505,24 @@ impl SessionManager {
         Ok(EventsResponse { events, has_more })
     }
 
+    async fn list_sessions(&self) -> Vec<SessionInfo> {
+        let sessions = self.sessions.lock().await;
+        sessions
+            .values()
+            .map(|state| SessionInfo {
+                session_id: state.session_id.clone(),
+                agent: state.agent.as_str().to_string(),
+                agent_mode: state.agent_mode.clone(),
+                permission_mode: state.permission_mode.clone(),
+                model: state.model.clone(),
+                variant: state.variant.clone(),
+                agent_session_id: state.agent_session_id.clone(),
+                ended: state.ended,
+                event_count: state.events.len() as u64,
+            })
+            .collect()
+    }
+
     async fn subscribe(
         &self,
         session_id: &str,
@@ -1245,6 +1263,25 @@ pub struct AgentInfo {
 #[serde(rename_all = "camelCase")]
 pub struct AgentListResponse {
     pub agents: Vec<AgentInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionInfo {
+    pub session_id: String,
+    pub agent: String,
+    pub agent_mode: String,
+    pub permission_mode: String,
+    pub model: Option<String>,
+    pub variant: Option<String>,
+    pub agent_session_id: Option<String>,
+    pub ended: bool,
+    pub event_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, JsonSchema)]
+pub struct SessionListResponse {
+    pub sessions: Vec<SessionInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema, JsonSchema)]
