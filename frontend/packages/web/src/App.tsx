@@ -58,11 +58,19 @@ type UniversalEventData =
   | { questionAsked: QuestionRequest }
   | { permissionAsked: PermissionRequest };
 
+type UniversalMessagePart = {
+  type: string;
+  text?: string;
+  name?: string;
+  input?: unknown;
+  output?: unknown;
+};
+
 type UniversalMessage = {
   role?: string;
-  content?: string;
-  type?: string;
+  parts?: UniversalMessagePart[];
   raw?: unknown;
+  error?: string;
 };
 
 type StartedInfo = {
@@ -627,12 +635,20 @@ export default function App() {
   const transcriptMessages = useMemo(() => {
     return events
       .filter((event): event is UniversalEvent & { data: { message: UniversalMessage } } => "message" in event.data)
-      .map((event) => ({
-        id: event.id,
-        role: event.data.message?.role ?? "assistant",
-        content: event.data.message?.content ?? "",
-        timestamp: event.timestamp
-      }))
+      .map((event) => {
+        const msg = event.data.message;
+        // Extract text from parts array
+        const content = msg?.parts
+          ?.filter((part) => part.type === "text" && part.text)
+          .map((part) => part.text)
+          .join("\n") ?? "";
+        return {
+          id: event.id,
+          role: msg?.role ?? "assistant",
+          content,
+          timestamp: event.timestamp
+        };
+      })
       .filter((msg) => msg.content);
   }, [events]);
 
