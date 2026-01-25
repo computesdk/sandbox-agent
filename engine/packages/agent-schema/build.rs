@@ -3,7 +3,7 @@ use std::path::Path;
 
 fn main() {
     let out_dir = std::env::var("OUT_DIR").unwrap();
-    let schema_dir = Path::new("../../dist");
+    let schema_dir = Path::new("../../../resources/agent-schemas/dist");
 
     let schemas = [
         ("opencode", "opencode.json"),
