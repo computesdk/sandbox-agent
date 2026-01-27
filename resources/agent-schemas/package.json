@@ -12,7 +12,8 @@
     "extract:claude-events": "tsx src/claude-event-types.ts",
     "extract:claude-events:sdk": "tsx src/claude-event-types-sdk.ts",
     "extract:claude-events:cli": "tsx src/claude-event-types-cli.ts",
-    "extract:claude-events:docs": "tsx src/claude-event-types-docs.ts"
+    "extract:claude-events:docs": "tsx src/claude-event-types-docs.ts",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "ts-json-schema-generator": "^2.4.0",
@@ -23,6 +24,7 @@
   },
   "devDependencies": {
     "tsx": "^4.19.0",
-    "@types/node": "^22.0.0"
+    "@types/node": "^22.0.0",
+    "@types/json-schema": "^7.0.15"
   }
 }

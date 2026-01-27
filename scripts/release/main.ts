@@ -313,10 +313,15 @@ function buildTypescript(rootDir: string) {
 }
 
 function generateArtifacts(rootDir: string) {
+  run("pnpm", ["install"], { cwd: rootDir });
+  run("pnpm", ["--filter", "@sandbox-agent/inspector", "build"], {
+    cwd: rootDir,
+    env: { ...process.env, SANDBOX_AGENT_SKIP_INSPECTOR: "1" },
+  });
   const sdkDir = path.join(rootDir, "sdks", "typescript");
   run("pnpm", ["run", "generate"], { cwd: sdkDir });
   run("cargo", ["check", "-p", "sandbox-agent-universal-schema-gen"], { cwd: rootDir });
-  run("cargo", ["run", "-p", "sandbox-agent-openapi-gen", "--", "--out", "sdks/openapi/openapi.json"], {
+  run("cargo", ["run", "-p", "sandbox-agent-openapi-gen", "--", "--out", "docs/openapi.json"], {
     cwd: rootDir,
   });
 }
@@ -367,14 +372,25 @@ function uploadBinaries(rootDir: string, version: string, latest: boolean) {
 }
 
 function runChecks(rootDir: string) {
+  console.log("==> Installing Node dependencies");
+  run("pnpm", ["install"], { cwd: rootDir });
+
+  console.log("==> Building inspector frontend");
+  run("pnpm", ["--filter", "@sandbox-agent/inspector", "build"], {
+    cwd: rootDir,
+    env: { ...process.env, SANDBOX_AGENT_SKIP_INSPECTOR: "1" },
+  });
+
   console.log("==> Running Rust checks");
   run("cargo", ["fmt", "--all", "--", "--check"], { cwd: rootDir });
   run("cargo", ["clippy", "--all-targets", "--", "-D", "warnings"], { cwd: rootDir });
   run("cargo", ["test", "--all-targets"], { cwd: rootDir });
 
   console.log("==> Running TypeScript checks");
-  run("pnpm", ["install"], { cwd: rootDir });
   run("pnpm", ["run", "build"], { cwd: rootDir });
+
+  console.log("==> Validating OpenAPI spec for Mintlify");
+  run("pnpm", ["dlx", "mint", "openapi-check", "docs/openapi.json"], { cwd: rootDir });
 }
 
 function publishCrates(rootDir: string, version: string) {

@@ -16,6 +16,7 @@ use sandbox_agent_core::router::{
 };
 use sandbox_agent_core::router::{AgentListResponse, AgentModesResponse, CreateSessionResponse, EventsResponse};
 use sandbox_agent_core::router::build_router;
+use sandbox_agent_core::ui;
 use serde::Serialize;
 use serde_json::Value;
 use thiserror::Error;
@@ -23,25 +24,42 @@ use tower_http::cors::{Any, CorsLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 const API_PREFIX: &str = "/v1";
+const DEFAULT_HOST: &str = "127.0.0.1";
+const DEFAULT_PORT: u16 = 2468;
 
 #[derive(Parser, Debug)]
-#[command(name = "sandbox-agent")]
-#[command(about = "Sandbox agent for managing coding agents", version)]
+#[command(name = "sandbox-daemon", bin_name = "sandbox-agent")]
+#[command(about = "Sandbox daemon for managing coding agents", version)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
 
-    #[arg(long, short = 'H', default_value = "127.0.0.1")]
-    host: String,
-
-    #[arg(long, short = 'p', default_value_t = 2468)]
-    port: u16,
-
-    #[arg(long, short = 't')]
+    #[arg(long, short = 't', global = true)]
     token: Option<String>,
 
-    #[arg(long, short = 'n')]
+    #[arg(long, short = 'n', global = true)]
     no_token: bool,
+}
+
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Run the sandbox daemon HTTP server.
+    Server(ServerArgs),
+    /// Manage installed agents and their modes.
+    Agents(AgentsArgs),
+    /// Create sessions and interact with session events.
+    Sessions(SessionsArgs),
+    /// Inspect locally discovered credentials.
+    Credentials(CredentialsArgs),
+}
+
+#[derive(Args, Debug)]
+struct ServerArgs {
+    #[arg(long, short = 'H', default_value = DEFAULT_HOST)]
+    host: String,
+
+    #[arg(long, short = 'p', default_value_t = DEFAULT_PORT)]
+    port: u16,
 
     #[arg(long = "cors-allow-origin", short = 'O')]
     cors_allow_origin: Vec<String>,
@@ -54,16 +72,6 @@ struct Cli {
 
     #[arg(long = "cors-allow-credentials", short = 'C')]
     cors_allow_credentials: bool,
-}
-
-#[derive(Subcommand, Debug)]
-enum Command {
-    /// Manage installed agents and their modes.
-    Agents(AgentsArgs),
-    /// Create sessions and interact with session events.
-    Sessions(SessionsArgs),
-    /// Inspect locally discovered credentials.
-    Credentials(CredentialsArgs),
 }
 
 #[derive(Args, Debug)]
@@ -255,6 +263,8 @@ struct CredentialsExtractEnvArgs {
 
 #[derive(Debug, Error)]
 enum CliError {
+    #[error("missing command: run `sandbox-daemon server` to start the daemon")]
+    MissingCommand,
     #[error("missing --token or --no-token for server mode")]
     MissingToken,
     #[error("invalid cors origin: {0}")]
@@ -280,8 +290,9 @@ fn main() {
     let cli = Cli::parse();
 
     let result = match &cli.command {
+        Some(Command::Server(args)) => run_server(&cli, args),
         Some(command) => run_client(command, &cli),
-        None => run_server(&cli),
+        None => Err(CliError::MissingCommand),
     };
 
     if let Err(err) = result {
@@ -298,7 +309,7 @@ fn init_logging() {
         .init();
 }
 
-fn run_server(cli: &Cli) -> Result<(), CliError> {
+fn run_server(cli: &Cli, server: &ServerArgs) -> Result<(), CliError> {
     let auth = if cli.no_token {
         AuthConfig::disabled()
     } else if let Some(token) = cli.token.clone() {
@@ -312,11 +323,16 @@ fn run_server(cli: &Cli) -> Result<(), CliError> {
     let state = AppState::new(auth, agent_manager);
     let mut router = build_router(state);
 
-    if let Some(cors) = build_cors_layer(cli)? {
+    if let Some(cors) = build_cors_layer(server)? {
         router = router.layer(cors);
     }
 
-    let addr = format!("{}:{}", cli.host, cli.port);
+    let addr = format!("{}:{}", server.host, server.port);
+    let display_host = match server.host.as_str() {
+        "0.0.0.0" | "::" => "localhost",
+        other => other,
+    };
+    let inspector_url = format!("http://{}:{}/ui", display_host, server.port);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -325,6 +341,11 @@ fn run_server(cli: &Cli) -> Result<(), CliError> {
     runtime.block_on(async move {
         let listener = tokio::net::TcpListener::bind(&addr).await?;
         tracing::info!(addr = %addr, "server listening");
+        if ui::is_enabled() {
+            tracing::info!(url = %inspector_url, "inspector ui available");
+        } else {
+            tracing::info!("inspector ui not embedded; set SANDBOX_AGENT_SKIP_INSPECTOR=1 to skip embedding during builds");
+        }
         axum::serve(listener, router)
             .await
             .map_err(|err| CliError::Server(err.to_string()))
@@ -339,6 +360,9 @@ fn default_install_dir() -> PathBuf {
 
 fn run_client(command: &Command, cli: &Cli) -> Result<(), CliError> {
     match command {
+        Command::Server(_) => Err(CliError::Server(
+            "server subcommand must be invoked as `sandbox-daemon server`".to_string(),
+        )),
         Command::Agents(subcommand) => run_agents(&subcommand.command, cli),
         Command::Sessions(subcommand) => run_sessions(&subcommand.command, cli),
         Command::Credentials(subcommand) => run_credentials(&subcommand.command),
@@ -663,11 +687,11 @@ fn available_providers(credentials: &ExtractedCredentials) -> Vec<String> {
     providers
 }
 
-fn build_cors_layer(cli: &Cli) -> Result<Option<CorsLayer>, CliError> {
-    let has_config = !cli.cors_allow_origin.is_empty()
-        || !cli.cors_allow_method.is_empty()
-        || !cli.cors_allow_header.is_empty()
-        || cli.cors_allow_credentials;
+fn build_cors_layer(server: &ServerArgs) -> Result<Option<CorsLayer>, CliError> {
+    let has_config = !server.cors_allow_origin.is_empty()
+        || !server.cors_allow_method.is_empty()
+        || !server.cors_allow_header.is_empty()
+        || server.cors_allow_credentials;
 
     if !has_config {
         return Ok(None);
@@ -675,11 +699,11 @@ fn build_cors_layer(cli: &Cli) -> Result<Option<CorsLayer>, CliError> {
 
     let mut cors = CorsLayer::new();
 
-    if cli.cors_allow_origin.is_empty() {
+    if server.cors_allow_origin.is_empty() {
         cors = cors.allow_origin(Any);
     } else {
         let mut origins = Vec::new();
-        for origin in &cli.cors_allow_origin {
+        for origin in &server.cors_allow_origin {
             let value = origin
                 .parse()
                 .map_err(|_| CliError::InvalidCorsOrigin(origin.clone()))?;
@@ -688,11 +712,11 @@ fn build_cors_layer(cli: &Cli) -> Result<Option<CorsLayer>, CliError> {
         cors = cors.allow_origin(origins);
     }
 
-    if cli.cors_allow_method.is_empty() {
+    if server.cors_allow_method.is_empty() {
         cors = cors.allow_methods(Any);
     } else {
         let mut methods = Vec::new();
-        for method in &cli.cors_allow_method {
+        for method in &server.cors_allow_method {
             let parsed = method
                 .parse()
                 .map_err(|_| CliError::InvalidCorsMethod(method.clone()))?;
@@ -701,11 +725,11 @@ fn build_cors_layer(cli: &Cli) -> Result<Option<CorsLayer>, CliError> {
         cors = cors.allow_methods(methods);
     }
 
-    if cli.cors_allow_header.is_empty() {
+    if server.cors_allow_header.is_empty() {
         cors = cors.allow_headers(Any);
     } else {
         let mut headers = Vec::new();
-        for header in &cli.cors_allow_header {
+        for header in &server.cors_allow_header {
             let parsed = header
                 .parse()
                 .map_err(|_| CliError::InvalidCorsHeader(header.clone()))?;
@@ -714,7 +738,7 @@ fn build_cors_layer(cli: &Cli) -> Result<Option<CorsLayer>, CliError> {
         cors = cors.allow_headers(headers);
     }
 
-    if cli.cors_allow_credentials {
+    if server.cors_allow_credentials {
         cors = cors.allow_credentials(true);
     }
 
@@ -732,7 +756,7 @@ impl ClientContext {
         let endpoint = args
             .endpoint
             .clone()
-            .unwrap_or_else(|| format!("http://{}:{}", cli.host, cli.port));
+            .unwrap_or_else(|| format!("http://{}:{}", DEFAULT_HOST, DEFAULT_PORT));
         let token = if cli.no_token { None } else { cli.token.clone() };
         let client = HttpClient::builder().build()?;
         Ok(Self {

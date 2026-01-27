@@ -22,6 +22,9 @@ export interface paths {
   "/v1/health": {
     get: operations["get_health"];
   };
+  "/v1/sessions": {
+    get: operations["list_sessions"];
+  };
   "/v1/sessions/{session_id}": {
     post: operations["create_session"];
   };
@@ -178,6 +181,21 @@ export interface components {
     QuestionToolRef: {
       callId: string;
       messageId: string;
+    };
+    SessionInfo: {
+      agent: string;
+      agentMode: string;
+      agentSessionId?: string | null;
+      ended: boolean;
+      /** Format: int64 */
+      eventCount: number;
+      model?: string | null;
+      permissionMode: string;
+      sessionId: string;
+      variant?: string | null;
+    };
+    SessionListResponse: {
+      sessions: components["schemas"]["SessionInfo"][];
     };
     Started: {
       details?: unknown;
@@ -354,6 +372,15 @@ export interface operations {
       200: {
         content: {
           "application/json": components["schemas"]["HealthResponse"];
+        };
+      };
+    };
+  };
+  list_sessions: {
+    responses: {
+      200: {
+        content: {
+          "application/json": components["schemas"]["SessionListResponse"];
         };
       };
     };

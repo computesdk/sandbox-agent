@@ -1,6 +1,5 @@
 import type { ChildProcess } from "node:child_process";
 import type { AddressInfo } from "node:net";
-import type { NodeRequire } from "node:module";
 
 export type SandboxDaemonSpawnLogMode = "inherit" | "pipe" | "silent";
 
@@ -68,7 +67,7 @@ export async function spawnSandboxDaemon(
   }
 
   const stdio = logMode === "inherit" ? "inherit" : logMode === "silent" ? "ignore" : "pipe";
-  const args = ["--host", bindHost, "--port", String(port), "--token", token];
+  const args = ["server", "--host", bindHost, "--port", String(port), "--token", token];
   const child = spawn(binaryPath, args, {
     stdio,
     env: {
@@ -112,7 +111,7 @@ function resolveBinaryFromEnv(fs: typeof import("node:fs"), path: typeof import(
 }
 
 function resolveBinaryFromCliPackage(
-  require: NodeRequire,
+  require: ReturnType<typeof import("node:module").createRequire>,
   path: typeof import("node:path"),
   fs: typeof import("node:fs"),
 ): string | null {

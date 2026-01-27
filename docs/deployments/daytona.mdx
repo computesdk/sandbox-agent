@@ -12,7 +12,7 @@ description: "Run the daemon in a Daytona workspace."
 ```bash
 export SANDBOX_TOKEN="..."
 
-cargo run -p sandbox-agent -- \
+cargo run -p sandbox-agent -- server \
   --token "$SANDBOX_TOKEN" \
   --host 0.0.0.0 \
   --port 2468

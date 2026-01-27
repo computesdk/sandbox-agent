@@ -9,6 +9,9 @@
       "dependsOn": ["^generate"],
       "outputs": ["src/generated/**"]
     },
+    "typecheck": {
+      "dependsOn": ["^build", "build"]
+    },
     "dev": {
       "cache": false,
       "persistent": true

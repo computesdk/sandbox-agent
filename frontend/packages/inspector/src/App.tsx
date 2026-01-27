@@ -85,8 +85,17 @@ const formatTime = (value: string) => {
   return date.toLocaleTimeString();
 };
 
+const getDefaultEndpoint = () => {
+  if (typeof window === "undefined") return "http://127.0.0.1:2468";
+  const { origin, protocol } = window.location;
+  if (!origin || origin === "null" || protocol === "file:") {
+    return "http://127.0.0.1:2468";
+  }
+  return origin;
+};
+
 export default function App() {
-  const [endpoint, setEndpoint] = useState("http://localhost:2468");
+  const [endpoint, setEndpoint] = useState(getDefaultEndpoint);
   const [token, setToken] = useState("");
   const [connected, setConnected] = useState(false);
   const [connecting, setConnecting] = useState(false);
@@ -195,24 +204,33 @@ export default function App() {
     return error instanceof Error ? error.message : fallback;
   };
 
-  const connect = async () => {
+  const connectToDaemon = async (reportError: boolean) => {
     setConnecting(true);
-    setConnectError(null);
+    if (reportError) {
+      setConnectError(null);
+    }
     try {
       const client = createClient();
       await client.getHealth();
       setConnected(true);
       await refreshAgents();
       await fetchSessions();
+      if (reportError) {
+        setConnectError(null);
+      }
     } catch (error) {
-      const message = getErrorMessage(error, "Unable to connect");
-      setConnectError(message);
+      if (reportError) {
+        const message = getErrorMessage(error, "Unable to connect");
+        setConnectError(message);
+      }
       setConnected(false);
       clientRef.current = null;
     } finally {
       setConnecting(false);
     }
   };
+
+  const connect = () => connectToDaemon(true);
 
   const disconnect = () => {
     setConnected(false);
@@ -531,10 +549,10 @@ export default function App() {
       .filter((event): event is UniversalEvent & { data: { message: UniversalMessage } } => "message" in event.data)
       .map((event) => {
         const msg = event.data.message;
-        const parts = "parts" in msg ? msg.parts : [];
+        const parts = ("parts" in msg ? msg.parts : []) ?? [];
         const content = parts
-          .filter((part: UniversalMessagePart) => part.type === "text" && part.text)
-          .map((part: UniversalMessagePart) => part.text)
+          .filter((part: UniversalMessagePart): part is UniversalMessagePart & { type: "text"; text: string } => part.type === "text" && "text" in part && typeof part.text === "string")
+          .map((part) => part.text)
           .join("\n");
         return {
           id: event.id,
@@ -550,6 +568,20 @@ export default function App() {
     return () => {
       stopPolling();
       stopSse();
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    const attempt = async () => {
+      await connectToDaemon(false);
+    };
+    attempt().catch(() => {
+      if (!active) return;
+      setConnecting(false);
+    });
+    return () => {
+      active = false;
     };
   }, []);
 
@@ -672,7 +704,7 @@ export default function App() {
 
               <p className="hint">
                 Start the daemon with CORS enabled for browser access:<br />
-                <code>sandbox-agent --cors-allow-origin http://localhost:5173</code>
+                <code>sandbox-daemon server --cors-allow-origin http://localhost:5173</code>
               </p>
             </div>
           </div>

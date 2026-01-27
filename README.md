@@ -3,17 +3,16 @@
 Universal API for running Claude Code, Codex, OpenCode, and Amp inside sandboxes.
 
 - **Any coding agent**: Universal API to interact with all agents with full feature coverage
-- **Server, stdin/stdout, or SDK mode**: Run as an HTTP server, CLI using stdin/stdout, or with the SDK
+- **Server or SDK mode**: Run as an HTTP server or with the TypeScript SDK
 - **Universal session schema**: Universal schema to store agent transcripts
 - **Supports your sandbox provider**: Daytona, E2B, Vercel Sandboxes, and more
 - **Lightweight, portable Rust binary**: Install anywhere with 1 curl command
-- **OpenAPI spec**: Versioned API schema tracked in `sdks/openapi/openapi.json`
+- **OpenAPI spec**: Versioned API schema tracked in `docs/openapi.json`
 
-Coming soon:
+Roadmap:
 
-- **Vercel AI SDK Compatibility**: Works with existing AI SDK tooling, like `useChat`
-- **Auto-configure MCP & Skills**: Auto-load MCP servers & skills for your agents
-- **Process & logs manager**: Manage processes, logs, and ports for your agents to run background processes
+[ ] Python SDK
+[ ] Automatic MCP & skillfile configuration
 
 ## Agent Support
 
@@ -85,5 +84,12 @@ The server is a single Rust binary that runs anywhere with a curl install. If yo
 **Can I use this with my personal API keys?**
 Yes. Use `sandbox-agent credentials extract-env` to extract API keys from your local agent configs (Claude Code, Codex, OpenCode, Amp) and pass them to the sandbox environment.
 
-**Why rust?**
+**Why Rust?**
 TODO
+
+**Why not use stdio/JSON-RPC?**
+
+- has benefit of not having to listen on a port
+- more difficult to interact with, harder to analyze, doesn't support inspector for debugging
+- may add at some point
+- codex does this. claude sort of does this.

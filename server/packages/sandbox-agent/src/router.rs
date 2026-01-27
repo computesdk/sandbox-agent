@@ -46,7 +46,7 @@ use serde_json::{json, Value};
 use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio_stream::wrappers::BroadcastStream;
 use tokio::time::sleep;
-use utoipa::{OpenApi, ToSchema};
+use utoipa::{Modify, OpenApi, ToSchema};
 
 use sandbox_agent_agent_management::agents::{
     AgentError as ManagerError, AgentId, AgentManager, InstallOptions, SpawnOptions, StreamingSpawn,
@@ -187,9 +187,20 @@ pub fn build_router(state: AppState) -> Router {
         (name = "meta", description = "Service metadata"),
         (name = "agents", description = "Agent management"),
         (name = "sessions", description = "Session management")
-    )
+    ),
+    modifiers(&ServerAddon)
 )]
 pub struct ApiDoc;
+
+struct ServerAddon;
+
+impl Modify for ServerAddon {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        openapi.servers = Some(vec![utoipa::openapi::Server::new(
+            "http://localhost:2468",
+        )]);
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ApiError {
@@ -594,13 +605,13 @@ impl SessionManager {
             let session = sessions.get_mut(session_id).ok_or_else(|| SandboxError::SessionNotFound {
                 session_id: session_id.to_string(),
             })?;
-            if let Some(err) = session.ended_error() {
-                return Err(err);
-            }
             if !session.take_question(question_id) {
                 return Err(SandboxError::InvalidRequest {
                     message: format!("unknown question id: {question_id}"),
                 });
+            }
+            if let Some(err) = session.ended_error() {
+                return Err(err);
             }
             (session.agent, session.agent_session_id.clone())
         };
@@ -628,13 +639,13 @@ impl SessionManager {
             let session = sessions.get_mut(session_id).ok_or_else(|| SandboxError::SessionNotFound {
                 session_id: session_id.to_string(),
             })?;
-            if let Some(err) = session.ended_error() {
-                return Err(err);
-            }
             if !session.take_question(question_id) {
                 return Err(SandboxError::InvalidRequest {
                     message: format!("unknown question id: {question_id}"),
                 });
+            }
+            if let Some(err) = session.ended_error() {
+                return Err(err);
             }
             (session.agent, session.agent_session_id.clone())
         };
@@ -663,13 +674,13 @@ impl SessionManager {
             let session = sessions.get_mut(session_id).ok_or_else(|| SandboxError::SessionNotFound {
                 session_id: session_id.to_string(),
             })?;
-            if let Some(err) = session.ended_error() {
-                return Err(err);
-            }
             if !session.take_permission(permission_id) {
                 return Err(SandboxError::InvalidRequest {
                     message: format!("unknown permission id: {permission_id}"),
                 });
+            }
+            if let Some(err) = session.ended_error() {
+                return Err(err);
             }
             let codex_metadata = if session.agent == AgentId::Codex {
                 session.events.iter().find_map(|event| {
@@ -858,47 +869,45 @@ impl SessionManager {
             Ok(Ok(status)) if status.success() => {}
             Ok(Ok(status)) => {
                 let message = format!("agent exited with status {:?}", status);
-                self.record_error(
-                    &session_id,
-                    message.clone(),
-                    Some("process_exit".to_string()),
-                    None,
-                )
+                if !terminate_early {
+                    self.record_error(
+                        &session_id,
+                        message.clone(),
+                        Some("process_exit".to_string()),
+                        None,
+                    )
                     .await;
+                }
                 self.mark_session_ended(&session_id, status.code(), &message)
                     .await;
             }
             Ok(Err(err)) => {
                 let message = format!("failed to wait for agent: {err}");
-                self.record_error(
-                    &session_id,
-                    message.clone(),
-                    Some("process_wait_failed".to_string()),
-                    None,
-                )
-                .await;
-                self.mark_session_ended(
-                    &session_id,
-                    None,
-                    &message,
-                )
-                .await;
+                if !terminate_early {
+                    self.record_error(
+                        &session_id,
+                        message.clone(),
+                        Some("process_wait_failed".to_string()),
+                        None,
+                    )
+                    .await;
+                }
+                self.mark_session_ended(&session_id, None, &message)
+                    .await;
             }
             Err(err) => {
                 let message = format!("failed to join agent task: {err}");
-                self.record_error(
-                    &session_id,
-                    message.clone(),
-                    Some("process_wait_failed".to_string()),
-                    None,
-                )
-                .await;
-                self.mark_session_ended(
-                    &session_id,
-                    None,
-                    &message,
-                )
-                .await;
+                if !terminate_early {
+                    self.record_error(
+                        &session_id,
+                        message.clone(),
+                        Some("process_wait_failed".to_string()),
+                        None,
+                    )
+                    .await;
+                }
+                self.mark_session_ended(&session_id, None, &message)
+                    .await;
             }
         }
     }
@@ -2179,15 +2188,22 @@ impl CodexAppServerState {
                     serde_json::from_value::<codex_schema::ServerNotification>(value.clone())
                 {
                     self.maybe_capture_thread_id(&notification);
-                    let conversion = convert_codex::notification_to_universal(&notification);
                     let should_terminate = matches!(
                         notification,
                         codex_schema::ServerNotification::TurnCompleted(_)
                             | codex_schema::ServerNotification::Error(_)
                     );
-                    CodexLineOutcome {
-                        conversion: Some(conversion),
-                        should_terminate,
+                    if codex_should_emit_notification(&notification) {
+                        let conversion = convert_codex::notification_to_universal(&notification);
+                        CodexLineOutcome {
+                            conversion: Some(conversion),
+                            should_terminate,
+                        }
+                    } else {
+                        CodexLineOutcome {
+                            conversion: None,
+                            should_terminate,
+                        }
                     }
                 } else {
                     CodexLineOutcome::default()
@@ -2366,6 +2382,20 @@ fn codex_sandbox_policy(mode: Option<&str>) -> Option<codex_schema::SandboxPolic
         Some("plan") => Some(codex_schema::SandboxPolicy::ReadOnly),
         Some("bypass") => Some(codex_schema::SandboxPolicy::DangerFullAccess),
         _ => None,
+    }
+}
+
+fn codex_should_emit_notification(notification: &codex_schema::ServerNotification) -> bool {
+    match notification {
+        codex_schema::ServerNotification::ThreadStarted(_)
+        | codex_schema::ServerNotification::TurnStarted(_)
+        | codex_schema::ServerNotification::Error(_) => true,
+        codex_schema::ServerNotification::ItemCompleted(params) => matches!(
+            params.item,
+            codex_schema::ThreadItem::UserMessage { .. }
+                | codex_schema::ThreadItem::AgentMessage { .. }
+        ),
+        _ => false,
     }
 }
 

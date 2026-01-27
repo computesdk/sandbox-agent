@@ -45,6 +45,10 @@
               "http-api",
               "typescript-sdk"
             ]
+          },
+          {
+            "group": "API",
+            "openapi": "openapi.json"
           }
         ]
       },

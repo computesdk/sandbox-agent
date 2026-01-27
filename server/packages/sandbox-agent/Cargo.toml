@@ -31,6 +31,7 @@ schemars.workspace = true
 tracing.workspace = true
 tracing-logfmt.workspace = true
 tracing-subscriber.workspace = true
+include_dir.workspace = true
 
 [dev-dependencies]
 http-body-util.workspace = true

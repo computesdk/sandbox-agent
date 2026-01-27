@@ -8,7 +8,8 @@
     "url": "https://github.com/rivet-dev/sandbox-agent"
   },
   "bin": {
-    "sandbox-agent": "bin/sandbox-agent"
+    "sandbox-agent": "bin/sandbox-agent",
+    "sandbox-daemon": "bin/sandbox-agent"
   },
   "optionalDependencies": {
     "@sandbox-agent/cli-darwin-arm64": "0.1.0",

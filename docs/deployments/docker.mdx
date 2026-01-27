@@ -21,7 +21,7 @@ The binary will be written to `./artifacts/sandbox-agent-x86_64-unknown-linux-mu
 docker run --rm -p 2468:2468 \
   -v "$PWD/artifacts:/artifacts" \
   debian:bookworm-slim \
-  /artifacts/sandbox-agent-x86_64-unknown-linux-musl --token "$SANDBOX_TOKEN" --host 0.0.0.0 --port 2468
+  /artifacts/sandbox-agent-x86_64-unknown-linux-musl server --token "$SANDBOX_TOKEN" --host 0.0.0.0 --port 2468
 ```
 
 You can now access the API at `http://localhost:2468`.

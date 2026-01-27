@@ -7,7 +7,8 @@
   "scripts": {
     "dev": "vite",
     "build": "pnpm --filter sandbox-agent build && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "sandbox-agent": "workspace:*",

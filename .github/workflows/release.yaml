@@ -77,6 +77,18 @@ jobs:
         with:
           fetch-depth: 0
 
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Build inspector frontend
+        run: |
+          pnpm install
+          SANDBOX_AGENT_SKIP_INSPECTOR=1 pnpm --filter @sandbox-agent/inspector build
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 

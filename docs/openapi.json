@@ -11,6 +11,11 @@
     },
     "version": "0.1.0"
   },
+  "servers": [
+    {
+      "url": "http://localhost:2468"
+    }
+  ],
   "paths": {
     "/v1/agents": {
       "get": {

@@ -19,8 +19,9 @@ description: "Supported agents, install methods, and streaming formats."
 
 ## Capability notes
 
-- **Questions / permissions**: OpenCode natively supports these workflows. Claude plan approval is normalized into a question event.
-- **Streaming**: all agents stream events; OpenCode uses SSE, Codex uses JSON-RPC over stdio, others use JSONL.
+- **Questions / permissions**: OpenCode natively supports these workflows. Claude plan approval is normalized into a question event (tests do not currently exercise Claude question/permission flows).
+- **Streaming**: all agents stream events; OpenCode uses SSE, Codex uses JSON-RPC over stdio, others use JSONL. Codex is currently normalized to thread/turn starts plus user/assistant completed items (deltas and tool/reasoning items are not emitted yet).
+- **User messages**: Claude CLI output does not include explicit user-message events in our snapshots, so only assistant messages are surfaced for Claude today.
 - **Files and images**: normalized via `UniversalMessagePart` with `File` and `Image` parts.
 
 See [Universal API](/universal-api) for feature coverage details.

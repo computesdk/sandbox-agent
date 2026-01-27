@@ -1,15 +1,11 @@
 ---
 source: server/packages/sandbox-agent/tests/http_sse_snapshots.rs
-assertion_line: 1150
+assertion_line: 1139
 expression: "json!({ \"status\": status.as_u16(), \"payload\": payload, })"
 ---
 payload:
-  agent: codex
-  detail: "agent process exited: codex"
-  details:
-    exitCode: 1
-    stderr: agent exited with status ExitStatus(unix_wait_status(256))
-  status: 500
-  title: Agent Process Exited
-  type: "urn:sandbox-agent:error:agent_process_exited"
-status: 500
+  detail: "invalid request: unknown question id: missing-question"
+  status: 400
+  title: Invalid Request
+  type: "urn:sandbox-agent:error:invalid_request"
+status: 400

@@ -104,6 +104,7 @@
 - [ ] Add universal API feature checklist (questions, approve plan, etc.)
 - [ ] Document CLI, HTTP API, frontend app, and TypeScript SDK usage
 - [ ] Use collapsible sections for endpoints and SDK methods
+- [x] Integrate OpenAPI spec with Mintlify (docs/openapi.json + validation)
 
 ---
 
@@ -111,3 +112,4 @@
 - implement e2b example
 - implement typescript "start locally" by pulling form server using version
 - [x] Move agent schema sources to src/agents
+- [x] Add Vercel AI SDK UIMessage schema extractor

@@ -1,18 +1,30 @@
-## soon
+## launch
 
-- implement stdin/stdout
-- switch sdk to use sdtin/stdout for embedded mdoe
+- re-review agent schemas and compare it to ours
+- auto-serve frontend from cli
+- verify embedded sdk works
+- fix bugs in ui
+    - double messages
+    - user-sent messages
+    - permissions
+- consider migraing our standard to match the vercel ai standard
 - discuss actor arch in readme + give example
 - skillfile
     - specifically include the release checklist
-- image/etc input
+
+## soon
+
+- **Vercel AI SDK Compatibility**: Works with existing AI SDK tooling, like `useChat`
+- **Auto-configure MCP & Skills**: Auto-load MCP servers & skills for your agents
+- **Process & logs manager**: Manage processes, logs, and ports for your agents to run background processes
 
 ## later
 
+- review all flags available on coding agents clis
+- set up agent to check diffs in versions to recommend updates
 - auto-updating for long running job
 - persistence
 - system information/cpu/etc
-- git utils
 - api features
     - list agent modes available
     - list models available
