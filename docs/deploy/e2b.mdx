@@ -19,7 +19,7 @@ const envs: Record<string, string> = {};
 if (process.env.ANTHROPIC_API_KEY) envs.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 if (process.env.OPENAI_API_KEY) envs.OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-const sandbox = await Sandbox.create({ envs });
+const sandbox = await Sandbox.create({ allowInternetAccess: true, envs });
 
 // Install sandbox-agent
 await sandbox.commands.run(

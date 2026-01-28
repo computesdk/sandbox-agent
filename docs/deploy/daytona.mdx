@@ -3,9 +3,9 @@ title: "Daytona"
 description: "Run the daemon in a Daytona workspace."
 ---
 
-<Note>
-Daytona has [network egress limits](https://www.daytona.io/docs/en/network-limits/) on lower tiers. OpenAI and Anthropic APIs are whitelisted on all tiers, but other external services may be restricted on Tier 1 & 2.
-</Note>
+<Warning>
+Daytona Tier 3+ is required to access api.anthropic.com and api.openai.com. Tier 1/2 sandboxes have restricted network access that will cause agent failures. See [Daytona network limits](https://www.daytona.io/docs/en/network-limits/) for details.
+</Warning>
 
 ## Prerequisites
 
@@ -15,7 +15,7 @@ Daytona has [network egress limits](https://www.daytona.io/docs/en/network-limit
 ## TypeScript Example
 
 ```typescript
-import { Daytona, Image } from "@daytonaio/sdk";
+import { Daytona } from "@daytonaio/sdk";
 import { SandboxAgent } from "sandbox-agent";
 
 const daytona = new Daytona();
