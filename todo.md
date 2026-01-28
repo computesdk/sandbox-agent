@@ -9,4 +9,6 @@
 - [x] Add Docker/Vercel/Daytona/E2B examples with basic prompt scripts and tests.
 - [x] Add unified AgentServerManager for shared agent servers (Codex/OpenCode).
 - [x] Expose server status details in agent list API (uptime/restarts/last error/base URL).
+- [x] Add local agent install CLI command and document optional preinstall step.
+- [x] Move API CLI commands under the api subcommand.
 - [ ] Regenerate TypeScript SDK from updated OpenAPI (blocked: Node/pnpm not available in env).

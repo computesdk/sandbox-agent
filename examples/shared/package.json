@@ -3,6 +3,6 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./sandbox-agent-client.ts"
+    ".": "./src/sandbox-agent-client.ts"
   }
 }

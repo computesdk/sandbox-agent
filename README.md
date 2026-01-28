@@ -127,6 +127,15 @@ curl -fsSL https://releases.rivet.dev/sandbox-agent/latest/install.sh | sh
 sandbox-agent server --token "$SANDBOX_TOKEN" --host 127.0.0.1 --port 2468
 ```
 
+Optional: preinstall agent binaries (no server required; they will be installed lazily on first use if you skip this):
+
+```bash
+sandbox-agent install-agent claude
+sandbox-agent install-agent codex
+sandbox-agent install-agent opencode
+sandbox-agent install-agent amp
+```
+
 To disable auth locally:
 
 ```bash
@@ -147,14 +156,14 @@ npm install -g @sandbox-agent/cli
 Create a session and send a message:
 
 ```bash
-sandbox-agent sessions create my-session --agent codex --endpoint http://127.0.0.1:2468 --token "$SANDBOX_TOKEN"
-sandbox-agent sessions send-message my-session --message "Hello" --endpoint http://127.0.0.1:2468 --token "$SANDBOX_TOKEN"
-sandbox-agent sessions send-message-stream my-session --message "Hello" --endpoint http://127.0.0.1:2468 --token "$SANDBOX_TOKEN"
+sandbox-agent api sessions create my-session --agent codex --endpoint http://127.0.0.1:2468 --token "$SANDBOX_TOKEN"
+sandbox-agent api sessions send-message my-session --message "Hello" --endpoint http://127.0.0.1:2468 --token "$SANDBOX_TOKEN"
+sandbox-agent api sessions send-message-stream my-session --message "Hello" --endpoint http://127.0.0.1:2468 --token "$SANDBOX_TOKEN"
 ```
 
 Docs: https://rivet.dev/docs/cli
 
-### Extract credentials
+### Tip: Extract credentials
 
 ```bash
 sandbox-agent credentials extract-env --export

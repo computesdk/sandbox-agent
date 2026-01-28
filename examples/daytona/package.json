@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "tsx daytona.ts"
+    "start": "tsx src/daytona.ts"
   },
   "dependencies": {
     "@daytonaio/sdk": "latest",

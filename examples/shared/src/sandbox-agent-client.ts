@@ -140,7 +140,7 @@ export async function createSession({
   const normalized = normalizeBaseUrl(baseUrl);
   const sessionId = randomUUID();
   const body: Record<string, string> = {
-    agent: agentId || process.env.SANDBOX_AGENT || "codex",
+    agent: agentId || process.env.SANDBOX_AGENT || "claude",
   };
   const envAgentMode = agentMode || process.env.SANDBOX_AGENT_MODE;
   const envPermissionMode = permissionMode || process.env.SANDBOX_PERMISSION_MODE;
@@ -163,28 +163,6 @@ export async function createSession({
   return sessionId;
 }
 
-export async function sendMessage({
-  baseUrl,
-  token,
-  extraHeaders,
-  sessionId,
-  message,
-}: {
-  baseUrl: string;
-  token?: string;
-  extraHeaders?: Record<string, string>;
-  sessionId: string;
-  message: string;
-}): Promise<void> {
-  const normalized = normalizeBaseUrl(baseUrl);
-  await fetchJson(`${normalized}/v1/sessions/${sessionId}/messages`, {
-    token,
-    extraHeaders,
-    method: "POST",
-    body: { message },
-  });
-}
-
 function extractTextFromItem(item: any): string {
   if (!item?.content) return "";
   const textParts = item.content
@@ -197,53 +175,81 @@ function extractTextFromItem(item: any): string {
   return JSON.stringify(item.content, null, 2);
 }
 
-export async function waitForAssistantComplete({
+export async function sendMessageStream({
   baseUrl,
   token,
   extraHeaders,
   sessionId,
-  offset = 0,
-  timeoutMs = 120_000,
+  message,
+  onText,
 }: {
   baseUrl: string;
   token?: string;
   extraHeaders?: Record<string, string>;
   sessionId: string;
-  offset?: number;
-  timeoutMs?: number;
-}): Promise<{ text: string; offset: number }> {
+  message: string;
+  onText?: (text: string) => void;
+}): Promise<string> {
   const normalized = normalizeBaseUrl(baseUrl);
-  const deadline = Date.now() + timeoutMs;
-  let currentOffset = offset;
+  const headers = buildHeaders({ token, extraHeaders, contentType: true });
 
-  while (Date.now() < deadline) {
-    const data = await fetchJson(
-      `${normalized}/v1/sessions/${sessionId}/events?offset=${currentOffset}&limit=100`,
-      { token, extraHeaders }
-    );
+  const response = await fetch(`${normalized}/v1/sessions/${sessionId}/messages/stream`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ message }),
+  });
 
-    for (const event of data.events || []) {
-      if (typeof event.sequence === "number") {
-        currentOffset = Math.max(currentOffset, event.sequence);
+  if (!response.ok || !response.body) {
+    const text = await response.text();
+    throw new Error(`HTTP ${response.status} ${response.statusText}: ${text}`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let fullText = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+
+    for (const line of lines) {
+      if (!line.startsWith("data: ")) continue;
+      const data = line.slice(6);
+      if (data === "[DONE]") continue;
+
+      try {
+        const event = JSON.parse(data);
+
+        // Handle text deltas
+        if (event.type === "item.delta" && event.data?.delta?.type === "text") {
+          const text = event.data.delta.text || "";
+          fullText += text;
+          onText?.(text);
+        }
+
+        // Handle completed assistant message
+        if (
+          event.type === "item.completed" &&
+          event.data?.item?.kind === "message" &&
+          event.data?.item?.role === "assistant"
+        ) {
+          const itemText = extractTextFromItem(event.data.item);
+          if (itemText && !fullText) {
+            fullText = itemText;
+          }
+        }
+      } catch {
+        // Ignore parse errors
       }
-      if (
-        event.type === "item.completed" &&
-        event.data?.item?.kind === "message" &&
-        event.data?.item?.role === "assistant"
-      ) {
-        return {
-          text: extractTextFromItem(event.data.item),
-          offset: currentOffset,
-        };
-      }
-    }
-
-    if (!data.hasMore) {
-      await delay(300);
     }
   }
 
-  throw new Error("Timed out waiting for assistant response");
+  return fullText;
 }
 
 export async function runPrompt({
@@ -258,7 +264,6 @@ export async function runPrompt({
   agentId?: string;
 }): Promise<void> {
   const sessionId = await createSession({ baseUrl, token, extraHeaders, agentId });
-  let offset = 0;
 
   console.log(`Session ${sessionId} ready. Type /exit to quit.`);
 
@@ -280,16 +285,15 @@ export async function runPrompt({
     }
 
     try {
-      await sendMessage({ baseUrl, token, extraHeaders, sessionId, message: trimmed });
-      const result = await waitForAssistantComplete({
+      await sendMessageStream({
         baseUrl,
         token,
         extraHeaders,
         sessionId,
-        offset,
+        message: trimmed,
+        onText: (text) => process.stdout.write(text),
       });
-      offset = result.offset;
-      process.stdout.write(`${result.text}\n`);
+      process.stdout.write("\n");
     } catch (error) {
       console.error(error instanceof Error ? error.message : error);
     }

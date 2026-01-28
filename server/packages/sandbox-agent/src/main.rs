@@ -6,7 +6,7 @@ use std::sync::Arc;
 use clap::{Args, Parser, Subcommand};
 use reqwest::blocking::Client as HttpClient;
 use reqwest::Method;
-use sandbox_agent_agent_management::agents::AgentManager;
+use sandbox_agent_agent_management::agents::{AgentId, AgentManager, InstallOptions};
 use sandbox_agent_agent_management::credentials::{
     extract_all_credentials, AuthType, CredentialExtractionOptions, ExtractedCredentials,
     ProviderCredentials,
@@ -16,7 +16,9 @@ use sandbox_agent::router::{
     PermissionReply, PermissionReplyRequest, QuestionReplyRequest,
 };
 use sandbox_agent::telemetry;
-use sandbox_agent::router::{AgentListResponse, AgentModesResponse, CreateSessionResponse, EventsResponse};
+use sandbox_agent::router::{
+    AgentListResponse, AgentModesResponse, CreateSessionResponse, EventsResponse, SessionListResponse,
+};
 use sandbox_agent::router::{build_router_with_state, shutdown_servers};
 use sandbox_agent::ui;
 use serde::Serialize;
@@ -47,10 +49,10 @@ struct Cli {
 enum Command {
     /// Run the sandbox agent HTTP server.
     Server(ServerArgs),
-    /// Manage installed agents and their modes.
-    Agents(AgentsArgs),
-    /// Create sessions and interact with session events.
-    Sessions(SessionsArgs),
+    /// Call the HTTP API without writing client code.
+    Api(ApiArgs),
+    /// Install or reinstall an agent without running the server.
+    InstallAgent(InstallAgentArgs),
     /// Inspect locally discovered credentials.
     Credentials(CredentialsArgs),
 }
@@ -80,15 +82,9 @@ struct ServerArgs {
 }
 
 #[derive(Args, Debug)]
-struct AgentsArgs {
+struct ApiArgs {
     #[command(subcommand)]
-    command: AgentsCommand,
-}
-
-#[derive(Args, Debug)]
-struct SessionsArgs {
-    #[command(subcommand)]
-    command: SessionsCommand,
+    command: ApiCommand,
 }
 
 #[derive(Args, Debug)]
@@ -98,13 +94,11 @@ struct CredentialsArgs {
 }
 
 #[derive(Subcommand, Debug)]
-enum AgentsCommand {
-    /// List all agents and install status.
-    List(ClientArgs),
-    /// Install or reinstall an agent.
-    Install(InstallAgentArgs),
-    /// Show available modes for an agent.
-    Modes(AgentModesArgs),
+enum ApiCommand {
+    /// Manage installed agents and their modes.
+    Agents(AgentsArgs),
+    /// Create sessions and interact with session events.
+    Sessions(SessionsArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -116,8 +110,32 @@ enum CredentialsCommand {
     ExtractEnv(CredentialsExtractEnvArgs),
 }
 
+#[derive(Args, Debug)]
+struct AgentsArgs {
+    #[command(subcommand)]
+    command: AgentsCommand,
+}
+
+#[derive(Args, Debug)]
+struct SessionsArgs {
+    #[command(subcommand)]
+    command: SessionsCommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum AgentsCommand {
+    /// List all agents and install status.
+    List(ClientArgs),
+    /// Install or reinstall an agent.
+    Install(ApiInstallAgentArgs),
+    /// Show available modes for an agent.
+    Modes(AgentModesArgs),
+}
+
 #[derive(Subcommand, Debug)]
 enum SessionsCommand {
+    /// List active sessions.
+    List(ClientArgs),
     /// Create a new session for an agent.
     Create(CreateSessionArgs),
     #[command(name = "send-message")]
@@ -156,12 +174,19 @@ struct ClientArgs {
 }
 
 #[derive(Args, Debug)]
-struct InstallAgentArgs {
+struct ApiInstallAgentArgs {
     agent: String,
     #[arg(long, short = 'r')]
     reinstall: bool,
     #[command(flatten)]
     client: ClientArgs,
+}
+
+#[derive(Args, Debug)]
+struct InstallAgentArgs {
+    agent: String,
+    #[arg(long, short = 'r')]
+    reinstall: bool,
 }
 
 #[derive(Args, Debug)]
@@ -277,7 +302,7 @@ struct CredentialsExtractArgs {
     provider: Option<String>,
     #[arg(long, short = 'd')]
     home_dir: Option<PathBuf>,
-    #[arg(long, short = 'n')]
+    #[arg(long)]
     no_oauth: bool,
     #[arg(long, short = 'r')]
     reveal: bool,
@@ -290,7 +315,7 @@ struct CredentialsExtractEnvArgs {
     export: bool,
     #[arg(long, short = 'd')]
     home_dir: Option<PathBuf>,
-    #[arg(long, short = 'n')]
+    #[arg(long)]
     no_oauth: bool,
 }
 
@@ -407,9 +432,16 @@ fn run_client(command: &Command, cli: &Cli) -> Result<(), CliError> {
         Command::Server(_) => Err(CliError::Server(
             "server subcommand must be invoked as `sandbox-agent server`".to_string(),
         )),
-        Command::Agents(subcommand) => run_agents(&subcommand.command, cli),
-        Command::Sessions(subcommand) => run_sessions(&subcommand.command, cli),
+        Command::Api(subcommand) => run_api(&subcommand.command, cli),
+        Command::InstallAgent(args) => install_agent_local(args),
         Command::Credentials(subcommand) => run_credentials(&subcommand.command),
+    }
+}
+
+fn run_api(command: &ApiCommand, cli: &Cli) -> Result<(), CliError> {
+    match command {
+        ApiCommand::Agents(subcommand) => run_agents(&subcommand.command, cli),
+        ApiCommand::Sessions(subcommand) => run_sessions(&subcommand.command, cli),
     }
 }
 
@@ -440,6 +472,11 @@ fn run_agents(command: &AgentsCommand, cli: &Cli) -> Result<(), CliError> {
 
 fn run_sessions(command: &SessionsCommand, cli: &Cli) -> Result<(), CliError> {
     match command {
+        SessionsCommand::List(args) => {
+            let ctx = ClientContext::new(cli, args)?;
+            let response = ctx.get(&format!("{API_PREFIX}/sessions"))?;
+            print_json_response::<SessionListResponse>(response)
+        }
         SessionsCommand::Create(args) => {
             let ctx = ClientContext::new(cli, &args.client)?;
             let body = CreateSessionRequest {
@@ -672,6 +709,24 @@ fn redact_key(key: &str) -> String {
     let prefix = &trimmed[..4];
     let suffix = &trimmed[len - 4..];
     format!("{prefix}...{suffix}")
+}
+
+fn install_agent_local(args: &InstallAgentArgs) -> Result<(), CliError> {
+    let agent_id = AgentId::parse(&args.agent).ok_or_else(|| {
+        CliError::Server(format!("unsupported agent: {}", args.agent))
+    })?;
+    let manager =
+        AgentManager::new(default_install_dir()).map_err(|err| CliError::Server(err.to_string()))?;
+    manager
+        .install(
+            agent_id,
+            InstallOptions {
+                reinstall: args.reinstall,
+                version: None,
+            },
+        )
+        .map_err(|err| CliError::Server(err.to_string()))?;
+    Ok(())
 }
 
 fn select_token_for_agent(

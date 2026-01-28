@@ -38,7 +38,18 @@ sandbox-agent server \
   --cors-allow-credentials
 ```
 
-## 2. Create a session
+## 2. Install agents (optional)
+
+Agents install lazily on first use. To preinstall everything up front:
+
+```bash
+sandbox-agent install-agent claude
+sandbox-agent install-agent codex
+sandbox-agent install-agent opencode
+sandbox-agent install-agent amp
+```
+
+## 3. Create a session
 
 ```bash
 curl -X POST "http://127.0.0.1:2468/v1/sessions/my-session" \
@@ -47,7 +58,7 @@ curl -X POST "http://127.0.0.1:2468/v1/sessions/my-session" \
   -d '{"agent":"claude","agentMode":"build","permissionMode":"default"}'
 ```
 
-## 3. Send a message
+## 4. Send a message
 
 ```bash
 curl -X POST "http://127.0.0.1:2468/v1/sessions/my-session/messages" \
@@ -56,7 +67,7 @@ curl -X POST "http://127.0.0.1:2468/v1/sessions/my-session/messages" \
   -d '{"message":"Summarize the repository and suggest next steps."}'
 ```
 
-## 4. Read events
+## 5. Read events
 
 ```bash
 curl "http://127.0.0.1:2468/v1/sessions/my-session/events?offset=0&limit=50" \
@@ -79,14 +90,14 @@ curl -N -X POST "http://127.0.0.1:2468/v1/sessions/my-session/messages/stream" \
   -d '{"message":"Hello"}'
 ```
 
-## 5. CLI shortcuts
+## 6. CLI shortcuts
 
-The CLI mirrors the HTTP API:
+The `sandbox-agent api` subcommand mirrors the HTTP API:
 
 ```bash
-sandbox-agent sessions create my-session --agent claude --endpoint http://127.0.0.1:2468 --token "$SANDBOX_TOKEN"
+sandbox-agent api sessions create my-session --agent claude --endpoint http://127.0.0.1:2468 --token "$SANDBOX_TOKEN"
 
-sandbox-agent sessions send-message my-session --message "Hello" --endpoint http://127.0.0.1:2468 --token "$SANDBOX_TOKEN"
+sandbox-agent api sessions send-message my-session --message "Hello" --endpoint http://127.0.0.1:2468 --token "$SANDBOX_TOKEN"
 
-sandbox-agent sessions send-message-stream my-session --message "Hello" --endpoint http://127.0.0.1:2468 --token "$SANDBOX_TOKEN"
+sandbox-agent api sessions send-message-stream my-session --message "Hello" --endpoint http://127.0.0.1:2468 --token "$SANDBOX_TOKEN"
 ```

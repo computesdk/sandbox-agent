@@ -56,10 +56,10 @@ fn main() {
         fs::write(&out_path, formatted)
             .unwrap_or_else(|e| panic!("Failed to write {}: {}", out_path.display(), e));
 
-        emit_stdout(&format!(
-            "cargo:warning=Generated {} types from {}",
-            name, file
-        ));
+        // emit_stdout(&format!(
+        //     "cargo:warning=Generated {} types from {}",
+        //     name, file
+        // ));
     }
 }
 

@@ -2329,47 +2329,63 @@ impl SessionManager {
             }
         };
         let event_type = value.get("type").and_then(Value::as_str).unwrap_or("");
-        if event_type == "assistant" {
+        let native_session_id = value
+            .get("session_id")
+            .and_then(Value::as_str)
+            .or_else(|| value.get("sessionId").and_then(Value::as_str))
+            .map(|id| id.to_string());
+        if event_type == "assistant" || event_type == "result" || native_session_id.is_some() {
             let mut sessions = self.sessions.lock().await;
             if let Some(session) = Self::session_mut(&mut sessions, session_id) {
-                let id = value
-                    .get("message")
-                    .and_then(|message| message.get("id"))
-                    .and_then(Value::as_str)
-                    .map(|id| id.to_string())
-                    .unwrap_or_else(|| {
-                        session.claude_message_counter += 1;
-                        let generated =
-                            format!("{}_message_{}", session.session_id, session.claude_message_counter);
-                        if let Some(message) = value.get_mut("message").and_then(Value::as_object_mut)
-                        {
-                            message.insert("id".to_string(), Value::String(generated.clone()));
-                        } else if let Some(map) = value.as_object_mut() {
-                            map.insert(
-                                "message".to_string(),
-                                serde_json::json!({
-                                    "id": generated
-                                }),
-                            );
-                        }
-                        generated
-                    });
-                session.last_claude_message_id = Some(id);
-            }
-        } else if event_type == "result" {
-            let has_message_id = value.get("message_id").is_some() || value.get("messageId").is_some();
-            let mut sessions = self.sessions.lock().await;
-            if let Some(session) = Self::session_mut(&mut sessions, session_id) {
-                if !has_message_id {
-                    let id = session.last_claude_message_id.take().unwrap_or_else(|| {
-                        session.claude_message_counter += 1;
-                        format!("{}_message_{}", session.session_id, session.claude_message_counter)
-                    });
-                    if let Some(map) = value.as_object_mut() {
-                        map.insert("message_id".to_string(), Value::String(id));
+                if let Some(native_session_id) = native_session_id.as_ref() {
+                    if session.native_session_id.is_none() {
+                        session.native_session_id = Some(native_session_id.clone());
                     }
-                } else {
-                    session.last_claude_message_id = None;
+                }
+                if event_type == "assistant" {
+                    let id = value
+                        .get("message")
+                        .and_then(|message| message.get("id"))
+                        .and_then(Value::as_str)
+                        .map(|id| id.to_string())
+                        .unwrap_or_else(|| {
+                            session.claude_message_counter += 1;
+                            let generated = format!(
+                                "{}_message_{}",
+                                session.session_id, session.claude_message_counter
+                            );
+                            if let Some(message) =
+                                value.get_mut("message").and_then(Value::as_object_mut)
+                            {
+                                message.insert("id".to_string(), Value::String(generated.clone()));
+                            } else if let Some(map) = value.as_object_mut() {
+                                map.insert(
+                                    "message".to_string(),
+                                    serde_json::json!({
+                                        "id": generated
+                                    }),
+                                );
+                            }
+                            generated
+                        });
+                    session.last_claude_message_id = Some(id);
+                } else if event_type == "result" {
+                    let has_message_id =
+                        value.get("message_id").is_some() || value.get("messageId").is_some();
+                    if !has_message_id {
+                        let id = session.last_claude_message_id.take().unwrap_or_else(|| {
+                            session.claude_message_counter += 1;
+                            format!(
+                                "{}_message_{}",
+                                session.session_id, session.claude_message_counter
+                            )
+                        });
+                        if let Some(map) = value.as_object_mut() {
+                            map.insert("message_id".to_string(), Value::String(id));
+                        }
+                    } else {
+                        session.last_claude_message_id = None;
+                    }
                 }
             }
         }
@@ -3958,6 +3974,7 @@ fn normalize_permission_mode(
         return Ok("bypass".to_string());
     }
     let supported = match agent {
+        AgentId::Claude => false,
         AgentId::Codex => matches!(mode, "default" | "plan" | "bypass"),
         AgentId::Amp => matches!(mode, "default" | "bypass"),
         AgentId::Opencode => matches!(mode, "default"),
