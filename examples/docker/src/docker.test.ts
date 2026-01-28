@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildHeaders } from "../shared/sandbox-agent-client.ts";
+import { buildHeaders } from "@sandbox-agent/example-shared";
 import { setupDockerSandboxAgent } from "./docker.ts";
 
 const shouldRun = process.env.RUN_DOCKER_EXAMPLES === "1";

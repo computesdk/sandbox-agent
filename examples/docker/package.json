@@ -7,13 +7,14 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "dockerode": "latest",
-    "@sandbox-agent/example-shared": "workspace:*"
+    "@sandbox-agent/example-shared": "workspace:*",
+    "dockerode": "latest"
   },
   "devDependencies": {
     "@types/dockerode": "latest",
     "@types/node": "latest",
     "tsx": "latest",
-    "typescript": "latest"
+    "typescript": "latest",
+    "vitest": "^3.0.0"
   }
 }

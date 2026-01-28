@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildHeaders } from "../shared/sandbox-agent-client.ts";
+import { buildHeaders } from "@sandbox-agent/example-shared";
 import { setupE2BSandboxAgent } from "./e2b.ts";
 
 const shouldRun = Boolean(process.env.E2B_API_KEY);

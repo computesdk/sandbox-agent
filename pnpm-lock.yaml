@@ -11,6 +11,9 @@ importers:
       turbo:
         specifier: ^2.4.0
         version: 2.7.6
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.4(@types/debug@4.1.12)(@types/node@25.0.10)
 
   examples/daytona:
     dependencies:
@@ -52,6 +55,9 @@ importers:
       typescript:
         specifier: latest
         version: 5.9.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.4(@types/debug@4.1.12)(@types/node@25.0.10)
 
   examples/e2b:
     dependencies:
@@ -74,6 +80,9 @@ importers:
       typescript:
         specifier: latest
         version: 5.9.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.4(@types/debug@4.1.12)(@types/node@25.0.10)
 
   examples/shared:
     dependencies:
