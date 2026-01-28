@@ -12,6 +12,7 @@ yarn.lock
 
 # Cache
 .cache/
+.astro/
 *.tsbuildinfo
 .turbo/
 
