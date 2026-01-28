@@ -61,6 +61,12 @@ const ChatMessages = ({
                   {entry.deltaText}
                   {isInProgress && <span className="cursor" />}
                 </span>
+              ) : isInProgress ? (
+                <span className="thinking-indicator">
+                  <span className="thinking-dot" />
+                  <span className="thinking-dot" />
+                  <span className="thinking-dot" />
+                </span>
               ) : (
                 <span className="muted">No content yet.</span>
               )}
