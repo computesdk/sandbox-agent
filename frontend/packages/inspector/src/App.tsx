@@ -51,10 +51,24 @@ const getDefaultEndpoint = () => {
   return origin;
 };
 
+const getInitialConnection = () => {
+  if (typeof window === "undefined") {
+    return { endpoint: "http://127.0.0.1:2468", token: "" };
+  }
+  const params = new URLSearchParams(window.location.search);
+  const urlParam = params.get("url")?.trim();
+  const tokenParam = params.get("token") ?? "";
+  return {
+    endpoint: urlParam && urlParam.length > 0 ? urlParam : getDefaultEndpoint(),
+    token: tokenParam
+  };
+};
+
 export default function App() {
   const issueTrackerUrl = "https://github.com/rivet-dev/sandbox-agent/issues/new";
-  const [endpoint, setEndpoint] = useState(getDefaultEndpoint);
-  const [token, setToken] = useState("");
+  const initialConnectionRef = useRef(getInitialConnection());
+  const [endpoint, setEndpoint] = useState(initialConnectionRef.current.endpoint);
+  const [token, setToken] = useState(initialConnectionRef.current.token);
   const [connected, setConnected] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [connectError, setConnectError] = useState<string | null>(null);

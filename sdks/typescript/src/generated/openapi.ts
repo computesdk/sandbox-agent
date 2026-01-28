@@ -67,6 +67,7 @@ export interface components {
       sessionLifecycle: boolean;
       /** @description Whether this agent uses a shared long-running server process (vs per-turn subprocess) */
       sharedProcess: boolean;
+      status: boolean;
       streamingDeltas: boolean;
       textMessages: boolean;
       toolCalls: boolean;

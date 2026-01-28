@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant};
 
 use axum::body::{Body, Bytes};
@@ -12,7 +12,7 @@ use tempfile::TempDir;
 use sandbox_agent_agent_management::agents::{AgentId, AgentManager};
 use sandbox_agent_agent_management::testing::{test_agents_from_env, TestAgentConfig};
 use sandbox_agent_agent_credentials::ExtractedCredentials;
-use sandbox_agent::router::{build_router, AppState, AuthConfig};
+use sandbox_agent::router::{build_router, AgentCapabilities, AgentListResponse, AppState, AuthConfig};
 use tower::util::ServiceExt;
 use tower_http::cors::CorsLayer;
 
@@ -455,6 +455,12 @@ fn normalize_event(event: &Value, seq: usize) -> Value {
     if let Some(event_type) = event.get("type").and_then(Value::as_str) {
         map.insert("type".to_string(), Value::String(event_type.to_string()));
     }
+    if let Some(source) = event.get("source").and_then(Value::as_str) {
+        map.insert("source".to_string(), Value::String(source.to_string()));
+    }
+    if let Some(synthetic) = event.get("synthetic").and_then(Value::as_bool) {
+        map.insert("synthetic".to_string(), Value::Bool(synthetic));
+    }
     let data = event.get("data").unwrap_or(&Value::Null);
     match event.get("type").and_then(Value::as_str).unwrap_or("") {
         "session.started" => {
@@ -666,6 +672,17 @@ fn normalize_health(value: &Value) -> Value {
         map.insert("status".to_string(), Value::String(status.to_string()));
     }
     Value::Object(map)
+}
+
+async fn fetch_capabilities(app: &Router) -> HashMap<String, AgentCapabilities> {
+    let (status, payload) = send_json(app, Method::GET, "/v1/agents", None).await;
+    assert_eq!(status, StatusCode::OK, "list agents");
+    let response: AgentListResponse = serde_json::from_value(payload).expect("agents payload");
+    response
+        .agents
+        .into_iter()
+        .map(|agent| (agent.id, agent.capabilities))
+        .collect()
 }
 
 fn snapshot_status(status: StatusCode) -> Value {
@@ -1077,200 +1094,208 @@ async fn api_endpoints_snapshots() {
 async fn approval_flow_snapshots() {
     let configs = test_agents_from_env().expect("configure SANDBOX_TEST_AGENTS or install agents");
     let app = TestApp::new();
+    let capabilities = fetch_capabilities(&app.app).await;
 
     for config in &configs {
         // OpenCode doesn't support "plan" permission mode required for approval flows
         if config.agent == AgentId::Opencode {
             continue;
         }
+        let caps = capabilities
+            .get(config.agent.as_str())
+            .expect("capabilities missing");
 
         let _guard = apply_credentials(&config.credentials);
         install_agent(&app.app, config.agent).await;
 
-        let permission_session = format!("perm-{}", config.agent.as_str());
-        create_session(&app.app, config.agent, &permission_session, "plan").await;
-        let status = send_status(
-            &app.app,
-            Method::POST,
-            &format!("/v1/sessions/{permission_session}/messages"),
-            Some(json!({ "message": PERMISSION_PROMPT })),
-        )
-        .await;
-        assert_eq!(status, StatusCode::NO_CONTENT, "send permission prompt");
-
-        let permission_events = poll_events_until_match(
-            &app.app,
-            &permission_session,
-            Duration::from_secs(120),
-            |events| find_permission_id(events).is_some() || should_stop(events),
-        )
-        .await;
-        let permission_events = truncate_permission_events(&permission_events);
-        insta::with_settings!({
-            snapshot_suffix => snapshot_name("permission_events", Some(config.agent)),
-        }, {
-            insta::assert_yaml_snapshot!(normalize_events(&permission_events));
-        });
-
-        if let Some(permission_id) = find_permission_id(&permission_events) {
+        if caps.plan_mode && caps.permissions {
+            let permission_session = format!("perm-{}", config.agent.as_str());
+            create_session(&app.app, config.agent, &permission_session, "plan").await;
             let status = send_status(
                 &app.app,
                 Method::POST,
-                &format!(
-                    "/v1/sessions/{permission_session}/permissions/{permission_id}/reply"
-                ),
-                Some(json!({ "reply": "once" })),
+                &format!("/v1/sessions/{permission_session}/messages"),
+                Some(json!({ "message": PERMISSION_PROMPT })),
             )
             .await;
-            assert_eq!(status, StatusCode::NO_CONTENT, "reply permission");
-            insta::with_settings!({
-                snapshot_suffix => snapshot_name("permission_reply", Some(config.agent)),
-            }, {
-                insta::assert_yaml_snapshot!(snapshot_status(status));
-            });
-        } else {
-            let (status, payload) = send_json(
+            assert_eq!(status, StatusCode::NO_CONTENT, "send permission prompt");
+
+            let permission_events = poll_events_until_match(
                 &app.app,
-                Method::POST,
-                &format!(
-                    "/v1/sessions/{permission_session}/permissions/missing-permission/reply"
-                ),
-                Some(json!({ "reply": "once" })),
+                &permission_session,
+                Duration::from_secs(120),
+                |events| find_permission_id(events).is_some() || should_stop(events),
             )
             .await;
-            assert!(!status.is_success(), "missing permission id should error");
+            let permission_events = truncate_permission_events(&permission_events);
             insta::with_settings!({
-                snapshot_suffix => snapshot_name("permission_reply_missing", Some(config.agent)),
+                snapshot_suffix => snapshot_name("permission_events", Some(config.agent)),
             }, {
-                insta::assert_yaml_snapshot!(json!({
-                    "status": status.as_u16(),
-                    "payload": payload,
-                }));
+                insta::assert_yaml_snapshot!(normalize_events(&permission_events));
             });
+
+            if let Some(permission_id) = find_permission_id(&permission_events) {
+                let status = send_status(
+                    &app.app,
+                    Method::POST,
+                    &format!(
+                        "/v1/sessions/{permission_session}/permissions/{permission_id}/reply"
+                    ),
+                    Some(json!({ "reply": "once" })),
+                )
+                .await;
+                assert_eq!(status, StatusCode::NO_CONTENT, "reply permission");
+                insta::with_settings!({
+                    snapshot_suffix => snapshot_name("permission_reply", Some(config.agent)),
+                }, {
+                    insta::assert_yaml_snapshot!(snapshot_status(status));
+                });
+            } else {
+                let (status, payload) = send_json(
+                    &app.app,
+                    Method::POST,
+                    &format!(
+                        "/v1/sessions/{permission_session}/permissions/missing-permission/reply"
+                    ),
+                    Some(json!({ "reply": "once" })),
+                )
+                .await;
+                assert!(!status.is_success(), "missing permission id should error");
+                insta::with_settings!({
+                    snapshot_suffix => snapshot_name("permission_reply_missing", Some(config.agent)),
+                }, {
+                    insta::assert_yaml_snapshot!(json!({
+                        "status": status.as_u16(),
+                        "payload": payload,
+                    }));
+                });
+            }
         }
 
-        let question_reply_session = format!("question-reply-{}", config.agent.as_str());
-        create_session(&app.app, config.agent, &question_reply_session, "plan").await;
-        let status = send_status(
-            &app.app,
-            Method::POST,
-            &format!("/v1/sessions/{question_reply_session}/messages"),
-            Some(json!({ "message": QUESTION_PROMPT })),
-        )
-        .await;
-        assert_eq!(status, StatusCode::NO_CONTENT, "send question prompt");
-
-        let question_events = poll_events_until_match(
-            &app.app,
-            &question_reply_session,
-            Duration::from_secs(120),
-            |events| find_question_id_and_answers(events).is_some() || should_stop(events),
-        )
-        .await;
-        let question_events = truncate_question_events(&question_events);
-        insta::with_settings!({
-            snapshot_suffix => snapshot_name("question_reply_events", Some(config.agent)),
-        }, {
-            insta::assert_yaml_snapshot!(normalize_events(&question_events));
-        });
-
-        if let Some((question_id, answers)) = find_question_id_and_answers(&question_events) {
+        if caps.questions {
+            let question_reply_session = format!("question-reply-{}", config.agent.as_str());
+            create_session(&app.app, config.agent, &question_reply_session, "plan").await;
             let status = send_status(
                 &app.app,
                 Method::POST,
-                &format!(
-                    "/v1/sessions/{question_reply_session}/questions/{question_id}/reply"
-                ),
-                Some(json!({ "answers": answers })),
+                &format!("/v1/sessions/{question_reply_session}/messages"),
+                Some(json!({ "message": QUESTION_PROMPT })),
             )
             .await;
-            assert_eq!(status, StatusCode::NO_CONTENT, "reply question");
-            insta::with_settings!({
-                snapshot_suffix => snapshot_name("question_reply", Some(config.agent)),
-            }, {
-                insta::assert_yaml_snapshot!(snapshot_status(status));
-            });
-        } else {
-            let (status, payload) = send_json(
+            assert_eq!(status, StatusCode::NO_CONTENT, "send question prompt");
+
+            let question_events = poll_events_until_match(
                 &app.app,
-                Method::POST,
-                &format!(
-                    "/v1/sessions/{question_reply_session}/questions/missing-question/reply"
-                ),
-                Some(json!({ "answers": [] })),
+                &question_reply_session,
+                Duration::from_secs(120),
+                |events| find_question_id_and_answers(events).is_some() || should_stop(events),
             )
             .await;
-            assert!(!status.is_success(), "missing question id should error");
+            let question_events = truncate_question_events(&question_events);
             insta::with_settings!({
-                snapshot_suffix => snapshot_name("question_reply_missing", Some(config.agent)),
+                snapshot_suffix => snapshot_name("question_reply_events", Some(config.agent)),
             }, {
-                insta::assert_yaml_snapshot!(json!({
-                    "status": status.as_u16(),
-                    "payload": payload,
-                }));
+                insta::assert_yaml_snapshot!(normalize_events(&question_events));
             });
-        }
 
-        let question_reject_session = format!("question-reject-{}", config.agent.as_str());
-        create_session(&app.app, config.agent, &question_reject_session, "plan").await;
-        let status = send_status(
-            &app.app,
-            Method::POST,
-            &format!("/v1/sessions/{question_reject_session}/messages"),
-            Some(json!({ "message": QUESTION_PROMPT })),
-        )
-        .await;
-        assert_eq!(status, StatusCode::NO_CONTENT, "send question prompt reject");
+            if let Some((question_id, answers)) = find_question_id_and_answers(&question_events) {
+                let status = send_status(
+                    &app.app,
+                    Method::POST,
+                    &format!(
+                        "/v1/sessions/{question_reply_session}/questions/{question_id}/reply"
+                    ),
+                    Some(json!({ "answers": answers })),
+                )
+                .await;
+                assert_eq!(status, StatusCode::NO_CONTENT, "reply question");
+                insta::with_settings!({
+                    snapshot_suffix => snapshot_name("question_reply", Some(config.agent)),
+                }, {
+                    insta::assert_yaml_snapshot!(snapshot_status(status));
+                });
+            } else {
+                let (status, payload) = send_json(
+                    &app.app,
+                    Method::POST,
+                    &format!(
+                        "/v1/sessions/{question_reply_session}/questions/missing-question/reply"
+                    ),
+                    Some(json!({ "answers": [] })),
+                )
+                .await;
+                assert!(!status.is_success(), "missing question id should error");
+                insta::with_settings!({
+                    snapshot_suffix => snapshot_name("question_reply_missing", Some(config.agent)),
+                }, {
+                    insta::assert_yaml_snapshot!(json!({
+                        "status": status.as_u16(),
+                        "payload": payload,
+                    }));
+                });
+            }
 
-        let reject_events = poll_events_until_match(
-            &app.app,
-            &question_reject_session,
-            Duration::from_secs(120),
-            |events| find_question_id_and_answers(events).is_some() || should_stop(events),
-        )
-        .await;
-        let reject_events = truncate_question_events(&reject_events);
-        insta::with_settings!({
-            snapshot_suffix => snapshot_name("question_reject_events", Some(config.agent)),
-        }, {
-            insta::assert_yaml_snapshot!(normalize_events(&reject_events));
-        });
-
-        if let Some((question_id, _)) = find_question_id_and_answers(&reject_events) {
+            let question_reject_session = format!("question-reject-{}", config.agent.as_str());
+            create_session(&app.app, config.agent, &question_reject_session, "plan").await;
             let status = send_status(
                 &app.app,
                 Method::POST,
-                &format!(
-                    "/v1/sessions/{question_reject_session}/questions/{question_id}/reject"
-                ),
-                None,
+                &format!("/v1/sessions/{question_reject_session}/messages"),
+                Some(json!({ "message": QUESTION_PROMPT })),
             )
             .await;
-            assert_eq!(status, StatusCode::NO_CONTENT, "reject question");
-            insta::with_settings!({
-                snapshot_suffix => snapshot_name("question_reject", Some(config.agent)),
-            }, {
-                insta::assert_yaml_snapshot!(snapshot_status(status));
-            });
-        } else {
-            let (status, payload) = send_json(
+            assert_eq!(status, StatusCode::NO_CONTENT, "send question prompt reject");
+
+            let reject_events = poll_events_until_match(
                 &app.app,
-                Method::POST,
-                &format!(
-                    "/v1/sessions/{question_reject_session}/questions/missing-question/reject"
-                ),
-                None,
+                &question_reject_session,
+                Duration::from_secs(120),
+                |events| find_question_id_and_answers(events).is_some() || should_stop(events),
             )
             .await;
-            assert!(!status.is_success(), "missing question id reject should error");
+            let reject_events = truncate_question_events(&reject_events);
             insta::with_settings!({
-                snapshot_suffix => snapshot_name("question_reject_missing", Some(config.agent)),
+                snapshot_suffix => snapshot_name("question_reject_events", Some(config.agent)),
             }, {
-                insta::assert_yaml_snapshot!(json!({
-                    "status": status.as_u16(),
-                    "payload": payload,
-                }));
+                insta::assert_yaml_snapshot!(normalize_events(&reject_events));
             });
+
+            if let Some((question_id, _)) = find_question_id_and_answers(&reject_events) {
+                let status = send_status(
+                    &app.app,
+                    Method::POST,
+                    &format!(
+                        "/v1/sessions/{question_reject_session}/questions/{question_id}/reject"
+                    ),
+                    None,
+                )
+                .await;
+                assert_eq!(status, StatusCode::NO_CONTENT, "reject question");
+                insta::with_settings!({
+                    snapshot_suffix => snapshot_name("question_reject", Some(config.agent)),
+                }, {
+                    insta::assert_yaml_snapshot!(snapshot_status(status));
+                });
+            } else {
+                let (status, payload) = send_json(
+                    &app.app,
+                    Method::POST,
+                    &format!(
+                        "/v1/sessions/{question_reject_session}/questions/missing-question/reject"
+                    ),
+                    None,
+                )
+                .await;
+                assert!(!status.is_success(), "missing question id reject should error");
+                insta::with_settings!({
+                    snapshot_suffix => snapshot_name("question_reject_missing", Some(config.agent)),
+                }, {
+                    insta::assert_yaml_snapshot!(json!({
+                        "status": status.as_u16(),
+                        "payload": payload,
+                    }));
+                });
+            }
         }
     }
 }

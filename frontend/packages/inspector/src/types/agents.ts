@@ -8,6 +8,7 @@ export type AgentCapabilitiesView = AgentCapabilities & {
   sessionLifecycle?: boolean;
   errorEvents?: boolean;
   reasoning?: boolean;
+  status?: boolean;
   commandExecution?: boolean;
   fileChanges?: boolean;
   mcpTools?: boolean;
@@ -26,6 +27,7 @@ export const emptyCapabilities: AgentCapabilitiesView = {
   sessionLifecycle: false,
   errorEvents: false,
   reasoning: false,
+  status: false,
   commandExecution: false,
   fileChanges: false,
   mcpTools: false,

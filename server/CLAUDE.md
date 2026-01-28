@@ -76,6 +76,8 @@ To keep snapshots deterministic:
 - Permission flow snapshots are truncated after the permission request (or first assistant) event.
 - Unknown events are preserved as `kind: unknown` (raw payload in universal schema).
 - Prefer snapshot-based event skeleton assertions over manual event-order assertions in tests.
+- **Never update snapshots based on any agent that is not the mock agent.** The mock agent is the source of truth for snapshots; other agents must be compared against the mock snapshots without regenerating them.
+- Agent-specific endpoints keep per-agent snapshots; any session-related snapshots must use the mock baseline as the single source of truth.
 
 ## Typical commands
 
