@@ -7,7 +7,7 @@ ARG TARGETARCH
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install dependencies
+# Install dependencies (g++-multilib not available on arm64)
 RUN apt-get update && apt-get install -y \
     musl-tools \
     musl-dev \
@@ -18,7 +18,6 @@ RUN apt-get update && apt-get install -y \
     pkg-config \
     ca-certificates \
     g++ \
-    g++-multilib \
     git \
     curl \
     wget && \
