@@ -548,6 +548,16 @@ export default function App() {
     }
   };
 
+  const endSession = async () => {
+    if (!sessionId) return;
+    try {
+      await getClient().terminateSession(sessionId);
+      await fetchSessions();
+    } catch (error) {
+      setSessionError(getErrorMessage(error, "Unable to end session"));
+    }
+  };
+
   const questionRequests = useMemo(() => {
     const latestById = new Map<string, QuestionEventData>();
     for (const event of events) {
@@ -859,6 +869,7 @@ export default function App() {
           onVariantChange={setVariant}
           onStreamModeChange={setStreamMode}
           onToggleStream={toggleStream}
+          onEndSession={endSession}
           hasSession={Boolean(sessionId)}
           eventError={eventError}
           questionRequests={questionRequests}

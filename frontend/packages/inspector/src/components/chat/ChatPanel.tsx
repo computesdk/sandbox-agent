@@ -1,4 +1,4 @@
-import { MessageSquare, PauseCircle, PlayCircle, Plus, Terminal } from "lucide-react";
+import { MessageSquare, PauseCircle, PlayCircle, Plus, Square, Terminal } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { AgentInfo, AgentModeInfo, PermissionEventData, QuestionEventData } from "sandbox-agent";
 import ApprovalsTab from "../debug/ApprovalsTab";
@@ -39,6 +39,7 @@ const ChatPanel = ({
   onVariantChange,
   onStreamModeChange,
   onToggleStream,
+  onEndSession,
   eventError,
   questionRequests,
   permissionRequests,
@@ -79,6 +80,7 @@ const ChatPanel = ({
   onVariantChange: (value: string) => void;
   onStreamModeChange: (value: "poll" | "sse" | "turn") => void;
   onToggleStream: () => void;
+  onEndSession: () => void;
   eventError: string | null;
   questionRequests: QuestionEventData[];
   permissionRequests: PermissionEventData[];
@@ -131,6 +133,17 @@ const ChatPanel = ({
           )}
         </div>
         <div className="panel-header-right">
+          {sessionId && (
+            <button
+              type="button"
+              className="button ghost small"
+              onClick={onEndSession}
+              title="End session"
+            >
+              <Square size={12} />
+              End
+            </button>
+          )}
           <div className="setup-stream">
             <select
               className="setup-select-small"

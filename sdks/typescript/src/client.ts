@@ -207,6 +207,10 @@ export class SandboxAgent {
     );
   }
 
+  async terminateSession(sessionId: string): Promise<void> {
+    await this.requestJson("POST", `${API_PREFIX}/sessions/${encodeURIComponent(sessionId)}/terminate`);
+  }
+
   async dispose(): Promise<void> {
     if (this.spawnHandle) {
       await this.spawnHandle.dispose();
