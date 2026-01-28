@@ -110,7 +110,7 @@ const SessionSidebar = ({
             >
               <div className="session-item-id">{session.sessionId}</div>
               <div className="session-item-meta">
-                <span className="session-item-agent">{session.agent}</span>
+                <span className="session-item-agent">{agentLabels[session.agent] ?? session.agent}</span>
                 <span className="session-item-events">{session.eventCount} events</span>
                 {session.ended && <span className="session-item-ended">ended</span>}
               </div>
