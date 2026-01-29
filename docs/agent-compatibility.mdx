@@ -1,12 +1,14 @@
 ---
-title: "Universal Schema Support"
-description: "Which agent features are exposed through the universal API."
+title: "Session Event Coverage"
+description: "What appears in your session transcript for each agent."
 icon: "table"
 ---
 
-The universal API normalizes different coding agents into a consistent interface. All agents have full native capabilities; this page shows what's exposed via the sandbox-agent API.
+Each coding agent outputs events in its own native format. The sandbox-agent converts these into a [universal event schema](/docs/universal-schema), giving you a consistent session transcript regardless of which agent you use.
 
-## Feature Matrix
+This page shows which agent capabilities appear in the universal event stream. All agents retain their full native capabilities—this only reflects what's normalized into the universal schema.
+
+## Coverage Matrix
 
 | Feature            | Claude | Codex | OpenCode     | Amp          |
 |--------------------|:------:|:-----:|:------------:|:------------:|
@@ -28,8 +30,9 @@ The universal API normalizes different coding agents into a consistent interface
 
 Agents: [Claude Code](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/overview) · [Codex](https://github.com/openai/codex) · [OpenCode](https://github.com/opencode-ai/opencode) · [Amp](https://ampcode.com)
 
-- ✓ = Supported in universal schema
-- \- = Schema support in progress
+- ✓ = Appears in session events
+- \- = Agent supports natively, schema conversion coming soon
+- (blank) = Not supported by agent
 
 ## Feature Descriptions
 

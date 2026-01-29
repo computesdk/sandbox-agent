@@ -17,34 +17,7 @@
 
 [Documentation](https://sandboxagent.dev/docs) — [Discord](https://rivet.dev/discord)
 
-## Universal Schema Support
-
-Which agent features are normalized into the universal event schema. All agents have full native capabilities; this shows what's exposed via the API.
-
-| Feature            | Claude | Codex | OpenCode     | Amp          |
-|--------------------|:------:|:-----:|:------------:|:------------:|
-| Stability          | Stable | Stable| Experimental | Experimental |
-| Text Messages      |   ✓    |   ✓   |      ✓       |      ✓       |
-| Tool Calls         |   ✓    |   ✓   |      ✓       |      ✓       |
-| Tool Results       |   ✓    |   ✓   |      ✓       |      ✓       |
-| Questions (HITL)   |   ✓    |       |      ✓       |              |
-| Permissions (HITL) |   ✓    |   ✓   |      ✓       |      -       |
-| Images             |   -    |   ✓   |      ✓       |      -       |
-| File Attachments   |   -    |   ✓   |      ✓       |      -       |
-| Session Lifecycle  |   -    |   ✓   |      ✓       |      -       |
-| Error Events       |   -    |   ✓   |      ✓       |      ✓       |
-| Reasoning/Thinking |   -    |   ✓   |              |              |
-| Command Execution  |   -    |   ✓   |              |              |
-| File Changes       |   -    |   ✓   |              |              |
-| MCP Tools          |   -    |   ✓   |              |              |
-| Streaming Deltas   |   ✓    |   ✓   |      ✓       |      -       |
-
-Agents: [Claude Code](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/overview) · [Codex](https://github.com/openai/codex) · [OpenCode](https://github.com/opencode-ai/opencode) · [Amp](https://ampcode.com)
-
-- ✓ = Supported in universal schema
-- \- = Schema support in progress
-
-Want support for another agent? [Open an issue](https://github.com/rivet-dev/sandbox-agent/issues/new) to request it.
+Want support for another agent or sandbox provider? [Open an issue](https://github.com/rivet-dev/sandbox-agent/issues/new) to request it.
 
 ## Architecture
 
