@@ -1,10 +1,10 @@
 ---
-title: "Agent Compatibility"
-description: "Feature support across coding agents."
+title: "Universal Schema Support"
+description: "Which agent features are exposed through the universal API."
 icon: "table"
 ---
 
-The universal API normalizes different coding agents into a consistent interface. Each agent has different native capabilities; the daemon fills gaps with synthetic events where possible.
+The universal API normalizes different coding agents into a consistent interface. All agents have full native capabilities; this page shows what's exposed via the sandbox-agent API.
 
 ## Feature Matrix
 
@@ -14,17 +14,20 @@ The universal API normalizes different coding agents into a consistent interface
 | Text Messages | ✓ | ✓ | ✓ | ✓ |
 | Tool Calls | ✓ | ✓ | ✓ | ✓ |
 | Tool Results | ✓ | ✓ | ✓ | ✓ |
-| Questions (HITL) | ✓ | | ✓ | |
-| Permissions (HITL) | ✓ | | ✓ | |
-| Images | | ✓ | ✓ | |
-| File Attachments | | ✓ | ✓ | |
-| Session Lifecycle | | ✓ | ✓ | |
-| Error Events | | ✓ | ✓ | ✓ |
-| Reasoning/Thinking | | ✓ | | |
-| Command Execution | | ✓ | | |
-| File Changes | | ✓ | | |
-| MCP Tools | | ✓ | | |
-| Streaming Deltas | ✓ | ✓ | ✓ | |
+| Questions (HITL) | ✓ | ○ | ✓ | ○ |
+| Permissions (HITL) | ✓ | ○ | ✓ | ○ |
+| Images | ○ | ✓ | ✓ | ○ |
+| File Attachments | ○ | ✓ | ✓ | ○ |
+| Session Lifecycle | ○ | ✓ | ✓ | ○ |
+| Error Events | ○ | ✓ | ✓ | ✓ |
+| Reasoning/Thinking | ○ | ✓ | | |
+| Command Execution | ○ | ✓ | | |
+| File Changes | ○ | ✓ | | |
+| MCP Tools | ○ | ✓ | | |
+| Streaming Deltas | ✓ | ✓ | ✓ | ○ |
+
+- ✓ = Supported in universal schema
+- ○ = Supported by agent, schema support in progress
 
 ## Feature Descriptions
 
