@@ -20,7 +20,7 @@ jobs:
 
       - name: Sync to skills repo
         env:
-          SKILLS_REPO_TOKEN: ${{ secrets.SKILLS_REPO_TOKEN }}
+          SKILLS_REPO_TOKEN: ${{ secrets.RIVET_GITHUB_PAT }}
         run: |
           if [ -z "$SKILLS_REPO_TOKEN" ]; then
             echo "SKILLS_REPO_TOKEN is not set" >&2
