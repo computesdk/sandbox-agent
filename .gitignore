@@ -42,3 +42,5 @@ Cargo.lock
 
 # CLI binaries (downloaded during npm publish)
 sdks/cli/platforms/*/bin/
+
+computesdk.txt

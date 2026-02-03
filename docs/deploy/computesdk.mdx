@@ -1,0 +1,111 @@
+---
+title: "ComputeSDK"
+description: "Deploy the daemon inside a ComputeSDK sandbox."
+---
+
+## Overview
+
+ComputeSDK is a meta-SDK that provides a unified interface across multiple sandbox providers (E2B, Vercel, Modal, Railway, Daytona, and more). You can switch providers by changing environment variables without modifying your code.
+
+## Prerequisites
+
+- `COMPUTESDK_API_KEY` environment variable (get one at [console.computesdk.com](https://console.computesdk.com/register))
+- A provider API key (e.g., `E2B_API_KEY`, `VERCEL_TOKEN`, `DAYTONA_API_KEY`)
+- `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` for the coding agents
+
+## TypeScript Example
+
+```typescript
+import { compute } from "computesdk";
+import { SandboxAgent } from "sandbox-agent";
+
+// Pass API keys to the sandbox
+const envs: Record<string, string> = {};
+if (process.env.ANTHROPIC_API_KEY) envs.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+if (process.env.OPENAI_API_KEY) envs.OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+
+// Create sandbox (auto-detects provider from environment variables)
+const sandbox = await compute.sandbox.create();
+
+// Install sandbox-agent
+await sandbox.runCommand(
+  "curl -fsSL https://releases.rivet.dev/sandbox-agent/latest/install.sh | sh"
+);
+
+// Install agents before starting the server
+await sandbox.runCommand("sandbox-agent install-agent claude");
+await sandbox.runCommand("sandbox-agent install-agent codex");
+
+// Start the server in the background
+await sandbox.runCommand(
+  `ANTHROPIC_API_KEY=${envs.ANTHROPIC_API_KEY || ""} OPENAI_API_KEY=${envs.OPENAI_API_KEY || ""} sandbox-agent server --no-token --host 0.0.0.0 --port 3000`,
+  { background: true }
+);
+
+// Connect to the server
+const baseUrl = await sandbox.getUrl({ port: 3000 });
+const client = await SandboxAgent.connect({ baseUrl });
+
+// Wait for server to be ready
+for (let i = 0; i < 30; i++) {
+  try {
+    await client.getHealth();
+    break;
+  } catch {
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+}
+
+// Create a session and start coding
+await client.createSession("my-session", {
+  agent: "claude",
+  permissionMode: "default",
+});
+
+await client.postMessage("my-session", {
+  message: "Summarize this repository",
+});
+
+for await (const event of client.streamEvents("my-session")) {
+  console.log(event.type, event.data);
+}
+
+// Cleanup
+await sandbox.destroy();
+```
+
+## Provider Flexibility
+
+ComputeSDK automatically detects your provider based on environment variables. To switch providers, simply change which API key you set:
+
+```bash
+# Use E2B
+export E2B_API_KEY=your_e2b_key
+
+# Or use Vercel
+export VERCEL_TOKEN=your_vercel_token
+export VERCEL_TEAM_ID=your_team_id
+export VERCEL_PROJECT_ID=your_project_id
+
+# Or use Daytona
+export DAYTONA_API_KEY=your_daytona_key
+
+# And always set ComputeSDK key
+export COMPUTESDK_API_KEY=your_computesdk_key
+```
+
+Your code stays the same regardless of which provider you choose.
+
+## Supported Providers
+
+ComputeSDK supports the following providers:
+- E2B
+- Vercel
+- Daytona
+- Modal
+- Railway
+- Render
+- Blaxel
+- Namespace
+
+See the [ComputeSDK documentation](https://computesdk.com/docs) for provider-specific setup instructions.
