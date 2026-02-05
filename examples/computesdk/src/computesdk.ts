@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { compute } from "computesdk";
-import { runPrompt, waitForHealth } from "@sandbox-agent/example-shared";
+import { runPrompt } from "@sandbox-agent/example-shared";
 
 export async function setupComputeSDKSandboxAgent() {
   const envs: Record<string, string> = {};
@@ -10,31 +10,76 @@ export async function setupComputeSDKSandboxAgent() {
   console.log("Creating ComputeSDK sandbox...");
   const sandbox = await compute.sandbox.create({ envs });
 
-  const run = async (cmd: string) => {
-    const result = await sandbox.runCommand(cmd);
-    if (result.exitCode !== 0) throw new Error(`Command failed: ${cmd}\n${result.stderr}`);
-    return result;
-  };
-
-  console.log("Installing sandbox-agent...");
-  // Install to ~/.local/bin for sandboxes without sudo
-  await run("mkdir -p ~/.local/bin");
-  await run("curl -fsSL https://releases.rivet.dev/sandbox-agent/latest/install.sh | BIN_DIR=~/.local/bin sh");
-
-  console.log("Installing agents...");
-  await run("~/.local/bin/sandbox-agent install-agent claude");
-  await run("~/.local/bin/sandbox-agent install-agent codex");
-
-  console.log("Starting server...");
-  await sandbox.runCommand("~/.local/bin/sandbox-agent server --no-token --host 0.0.0.0 --port 3000", {
-    background: true,
-    env: envs,
+  console.log("Starting sandbox-agent server...");
+  const server = await sandbox.server.start({
+    slug: "sandbox-agent",
+    // Install commands run first (blocking)
+    install:
+      "mkdir -p ~/.local/bin && " +
+      "curl -fsSL https://releases.rivet.dev/sandbox-agent/latest/install.sh | BIN_DIR=~/.local/bin sh && " +
+      "~/.local/bin/sandbox-agent install-agent claude && " +
+      "~/.local/bin/sandbox-agent install-agent codex",
+    // Start command runs after install completes
+    start: "~/.local/bin/sandbox-agent server --no-token --host 0.0.0.0 --port 3000",
+    port: 3000,
+    environment: envs,
+    // Built-in health check - status becomes 'ready' only after this passes
+    health_check: {
+      path: "/v1/health",
+      interval_ms: 2000,
+      timeout_ms: 5000,
+      delay_ms: 3000,
+    },
+    restart_policy: "on-failure",
+    max_restarts: 3,
   });
 
-  const baseUrl = await sandbox.getUrl({ port: 3000 });
+  // Wait for server to be ready or running with URL
+  console.log("Waiting for server to be ready...");
+  let currentServer = server;
+  let baseUrl: string | undefined;
+  const maxAttempts = 60;
+  let attempts = 0;
 
-  console.log("Waiting for server...");
-  await waitForHealth({ baseUrl });
+  while (attempts < maxAttempts) {
+    await new Promise((r) => setTimeout(r, 1000));
+    currentServer = await sandbox.server.retrieve("sandbox-agent");
+    console.log(`Server status: ${currentServer.status}, url: ${currentServer.url || "not available"}`);
+
+    // If we have a URL and status is running or ready, try to use it
+    if (currentServer.url && (currentServer.status === "running" || currentServer.status === "ready")) {
+      baseUrl = currentServer.url;
+      // Try a manual health check
+      try {
+        const healthResp = await fetch(`${baseUrl}/v1/health`, { signal: AbortSignal.timeout(5000) });
+        if (healthResp.ok) {
+          console.log("Health check passed!");
+          break;
+        }
+      } catch {
+        // Health check failed, keep waiting
+      }
+    }
+
+    // Check for failure states
+    if (currentServer.status === "failed" || currentServer.status === "stopped") {
+      const logs = await sandbox.server.logs("sandbox-agent");
+      console.error("Server logs:", logs.logs);
+      throw new Error(`Server failed to start: ${currentServer.status}`);
+    }
+
+    attempts++;
+  }
+
+  if (!baseUrl) {
+    // Fallback: try to get URL directly from sandbox
+    baseUrl = await sandbox.getUrl({ port: 3000 });
+    console.log(`Using fallback URL: ${baseUrl}`);
+  }
+
+  if (!baseUrl) {
+    throw new Error("Could not obtain server URL");
+  }
 
   const cleanup = async () => {
     await sandbox.destroy();
