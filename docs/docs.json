@@ -41,7 +41,7 @@
 		"pages": [
 			{
 				"group": "Getting started",
-				"pages": ["quickstart", "building-chat-ui", "manage-sessions"]
+				"pages": ["quickstart", "building-chat-ui", "manage-sessions", "opencode-compatibility"]
 			},
 			{
 				"group": "Deploy",
@@ -63,7 +63,6 @@
 				"group": "Reference",
 					"pages": [
 						"cli",
-						"opencode-compatibility",
 						"inspector",
 						"session-transcript-schema",
 						"cors",
