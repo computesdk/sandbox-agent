@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::env;
 
 use sandbox_agent_agent_management::agents::{
     AgentError, AgentId, AgentManager, InstallOptions, SpawnOptions,
@@ -29,6 +30,29 @@ fn prompt_ok(label: &str) -> String {
     format!("Respond with exactly the text {label} and nothing else.")
 }
 
+fn pi_tests_enabled() -> bool {
+    env::var("SANDBOX_TEST_PI")
+        .map(|value| {
+            let value = value.trim().to_ascii_lowercase();
+            value == "1" || value == "true" || value == "yes"
+        })
+        .unwrap_or(false)
+}
+
+fn pi_on_path() -> bool {
+    let binary = AgentId::Pi.binary_name();
+    let path_var = match env::var_os("PATH") {
+        Some(path) => path,
+        None => return false,
+    };
+    for path in env::split_paths(&path_var) {
+        if path.join(binary).exists() {
+            return true;
+        }
+    }
+    false
+}
+
 #[test]
 fn test_agents_install_version_spawn() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;
@@ -36,12 +60,15 @@ fn test_agents_install_version_spawn() -> Result<(), Box<dyn std::error::Error>>
     let env = build_env();
     assert!(!env.is_empty(), "expected credentials to be available");
 
-    let agents = [
+    let mut agents = vec![
         AgentId::Claude,
         AgentId::Codex,
         AgentId::Opencode,
         AgentId::Amp,
     ];
+    if pi_tests_enabled() && pi_on_path() {
+        agents.push(AgentId::Pi);
+    }
     for agent in agents {
         let install = manager.install(agent, InstallOptions::default())?;
         assert!(install.path.exists(), "expected install for {agent}");

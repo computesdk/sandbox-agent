@@ -10,6 +10,8 @@ use serde::Serialize;
 use time::OffsetDateTime;
 use tokio::time::Instant;
 
+use crate::http_client;
+
 const TELEMETRY_URL: &str = "https://tc.rivet.dev";
 const TELEMETRY_ENV_DEBUG: &str = "SANDBOX_AGENT_TELEMETRY_DEBUG";
 const TELEMETRY_ID_FILE: &str = "telemetry_id";
@@ -77,7 +79,7 @@ pub fn log_enabled_message() {
 
 pub fn spawn_telemetry_task() {
     tokio::spawn(async move {
-        let client = match Client::builder()
+        let client = match http_client::client_builder()
             .timeout(Duration::from_millis(TELEMETRY_TIMEOUT_MS))
             .build()
         {

@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::convert::Infallible;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -21,6 +21,7 @@ use reqwest::Client;
 use sandbox_agent_error::{AgentError, ErrorType, ProblemDetails, SandboxError};
 use sandbox_agent_universal_agent_schema::{
     codex as codex_schema, convert_amp, convert_claude, convert_codex, convert_opencode,
+    convert_pi, pi as pi_schema,
     AgentUnparsedData, ContentPart, ErrorData, EventConversion, EventSource, FileAction,
     ItemDeltaData, ItemEventData, ItemKind, ItemRole, ItemStatus, PermissionEventData,
     PermissionStatus, QuestionEventData, QuestionStatus, ReasoningVisibility, SessionEndReason,
@@ -37,6 +38,7 @@ use tower_http::trace::TraceLayer;
 use utoipa::{Modify, OpenApi, ToSchema};
 
 use crate::agent_server_logs::AgentServerLogs;
+use crate::http_client;
 use crate::ui;
 use sandbox_agent_agent_management::agents::{
     AgentError as ManagerError, AgentId, AgentManager, InstallOptions, SpawnOptions, StreamingSpawn,
@@ -714,7 +716,8 @@ impl SessionState {
 #[derive(Debug)]
 enum ManagedServerKind {
     Http { base_url: String },
-    Stdio { server: Arc<CodexServer> },
+    StdioCodex { server: Arc<CodexServer> },
+    StdioPi { server: Arc<PiServer> },
 }
 
 #[derive(Debug)]
@@ -847,6 +850,165 @@ impl CodexServer {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PiRpcDialect {
+    Mono,
+    CodingAgent,
+}
+
+fn detect_pi_dialect(path: &PathBuf) -> PiRpcDialect {
+    let mut file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => return PiRpcDialect::Mono,
+    };
+    let mut buffer = [0u8; 256];
+    let read = match file.read(&mut buffer) {
+        Ok(read) => read,
+        Err(_) => return PiRpcDialect::Mono,
+    };
+    if read == 0 {
+        return PiRpcDialect::Mono;
+    }
+    let sample = &buffer[..read];
+    if sample.starts_with(b"#!") {
+        return PiRpcDialect::CodingAgent;
+    }
+    if sample.iter().any(|byte| *byte == 0) {
+        return PiRpcDialect::Mono;
+    }
+    let is_text = sample.iter().all(|byte| byte.is_ascii());
+    if is_text {
+        return PiRpcDialect::CodingAgent;
+    }
+    PiRpcDialect::Mono
+}
+
+/// Shared Pi RPC process that multiplexes sessions via newline-delimited JSON.
+struct PiServer {
+    /// Sender for writing to the process stdin
+    stdin_sender: mpsc::UnboundedSender<String>,
+    /// Pending RPC requests awaiting responses, keyed by request ID
+    pending_requests: std::sync::Mutex<HashMap<i64, oneshot::Sender<Value>>>,
+    /// Next request ID for RPC
+    next_id: AtomicI64,
+    /// Mapping from native session ID to daemon session ID
+    session_map: std::sync::Mutex<HashMap<String, String>>,
+    /// Per-session conversion state (partial tool results, reasoning buffers)
+    converters: std::sync::Mutex<HashMap<String, convert_pi::PiEventConverter>>,
+    /// RPC dialect used by the Pi binary
+    dialect: PiRpcDialect,
+    /// Current daemon session id for coding-agent (no session id in events)
+    current_session_id: std::sync::Mutex<Option<String>>,
+    /// Current native session id for coding-agent (for metadata)
+    current_native_session_id: std::sync::Mutex<Option<String>>,
+}
+
+impl std::fmt::Debug for PiServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PiServer")
+            .field("next_id", &self.next_id.load(Ordering::SeqCst))
+            .finish()
+    }
+}
+
+impl PiServer {
+    fn new(stdin_sender: mpsc::UnboundedSender<String>, dialect: PiRpcDialect) -> Self {
+        Self {
+            stdin_sender,
+            pending_requests: std::sync::Mutex::new(HashMap::new()),
+            next_id: AtomicI64::new(1),
+            session_map: std::sync::Mutex::new(HashMap::new()),
+            converters: std::sync::Mutex::new(HashMap::new()),
+            dialect,
+            current_session_id: std::sync::Mutex::new(None),
+            current_native_session_id: std::sync::Mutex::new(None),
+        }
+    }
+
+    fn dialect(&self) -> PiRpcDialect {
+        self.dialect
+    }
+
+    fn current_session_id(&self) -> Option<String> {
+        self.current_session_id.lock().unwrap().clone()
+    }
+
+    fn current_native_session_id(&self) -> Option<String> {
+        self.current_native_session_id.lock().unwrap().clone()
+    }
+
+    fn next_request_id(&self) -> i64 {
+        self.next_id.fetch_add(1, Ordering::SeqCst)
+    }
+
+    fn send_request(&self, id: i64, request: &impl Serialize) -> Option<oneshot::Receiver<Value>> {
+        let (tx, rx) = oneshot::channel();
+        {
+            let mut pending = self.pending_requests.lock().unwrap();
+            pending.insert(id, tx);
+        }
+        let line = serde_json::to_string(request).ok()?;
+        self.stdin_sender.send(line).ok()?;
+        Some(rx)
+    }
+
+    fn complete_request(&self, id: i64, result: Value) {
+        let tx = {
+            let mut pending = self.pending_requests.lock().unwrap();
+            pending.remove(&id)
+        };
+        if let Some(tx) = tx {
+            let _ = tx.send(result);
+        }
+    }
+
+    fn register_session(&self, native_session_id: String, session_id: String) {
+        let mut sessions = self.session_map.lock().unwrap();
+        sessions.insert(native_session_id.clone(), session_id.clone());
+        let mut converters = self.converters.lock().unwrap();
+        converters
+            .entry(native_session_id.clone())
+            .or_insert_with(convert_pi::PiEventConverter::default);
+        if self.dialect == PiRpcDialect::CodingAgent {
+            *self.current_session_id.lock().unwrap() = Some(session_id);
+            *self.current_native_session_id.lock().unwrap() = Some(native_session_id);
+        }
+    }
+
+    fn unregister_session(&self, native_session_id: &str) {
+        let mut sessions = self.session_map.lock().unwrap();
+        sessions.remove(native_session_id);
+        let mut converters = self.converters.lock().unwrap();
+        converters.remove(native_session_id);
+        if self.dialect == PiRpcDialect::CodingAgent {
+            let current_native = self.current_native_session_id.lock().unwrap().clone();
+            if current_native.as_deref() == Some(native_session_id) {
+                *self.current_session_id.lock().unwrap() = None;
+                *self.current_native_session_id.lock().unwrap() = None;
+            }
+        }
+    }
+
+    fn session_for_native(&self, native_session_id: &str) -> Option<String> {
+        let sessions = self.session_map.lock().unwrap();
+        sessions.get(native_session_id).cloned()
+    }
+
+    fn clear_pending(&self) {
+        let mut pending = self.pending_requests.lock().unwrap();
+        pending.clear();
+    }
+
+    fn clear_sessions(&self) {
+        let mut sessions = self.session_map.lock().unwrap();
+        sessions.clear();
+        let mut converters = self.converters.lock().unwrap();
+        converters.clear();
+        *self.current_session_id.lock().unwrap() = None;
+        *self.current_native_session_id.lock().unwrap() = None;
+    }
+}
+
 struct SessionSubscription {
     initial_events: Vec<UniversalEvent>,
     receiver: broadcast::Receiver<UniversalEvent>,
@@ -856,7 +1018,7 @@ impl ManagedServer {
     fn base_url(&self) -> Option<String> {
         match &self.kind {
             ManagedServerKind::Http { base_url } => Some(base_url.clone()),
-            ManagedServerKind::Stdio { .. } => None,
+            ManagedServerKind::StdioCodex { .. } | ManagedServerKind::StdioPi { .. } => None,
         }
     }
 
@@ -956,6 +1118,24 @@ impl AgentServerManager {
             let mut natives = self.native_sessions.lock().await;
             natives.remove(&agent);
         }
+
+        if agent == AgentId::Pi {
+            if let Some(native_session_id) = native_session_id {
+                let server = {
+                    let servers = self.servers.lock().await;
+                    servers.get(&AgentId::Pi).and_then(|server| {
+                        if let ManagedServerKind::StdioPi { server } = &server.kind {
+                            Some(server.clone())
+                        } else {
+                            None
+                        }
+                    })
+                };
+                if let Some(server) = server {
+                    server.unregister_session(native_session_id);
+                }
+            }
+        }
     }
 
     async fn clear_mappings(&self, agent: AgentId) {
@@ -1050,7 +1230,7 @@ impl AgentServerManager {
             let servers = self.servers.lock().await;
             if let Some(server) = servers.get(&agent) {
                 if matches!(server.status, ServerStatus::Running) {
-                    if let ManagedServerKind::Stdio { server } = &server.kind {
+                    if let ManagedServerKind::StdioCodex { server } = &server.kind {
                         return Ok((server.clone(), None));
                     }
                 }
@@ -1075,7 +1255,7 @@ impl AgentServerManager {
                             let _ = child.kill();
                         }
                     }
-                    if let ManagedServerKind::Stdio { server } = &existing.kind {
+                    if let ManagedServerKind::StdioCodex { server } = &existing.kind {
                         return Ok((server.clone(), None));
                     }
                 }
@@ -1083,7 +1263,7 @@ impl AgentServerManager {
             servers.insert(
                 agent,
                 ManagedServer {
-                    kind: ManagedServerKind::Stdio {
+                    kind: ManagedServerKind::StdioCodex {
                         server: server.clone(),
                     },
                     child: child.clone(),
@@ -1102,6 +1282,65 @@ impl AgentServerManager {
         Ok((server, Some(stdout_rx)))
     }
 
+    async fn ensure_pi_server(
+        self: &Arc<Self>,
+    ) -> Result<(Arc<PiServer>, Option<mpsc::UnboundedReceiver<String>>), SandboxError> {
+        {
+            let servers = self.servers.lock().await;
+            if let Some(server) = servers.get(&AgentId::Pi) {
+                if matches!(server.status, ServerStatus::Running) {
+                    if let ManagedServerKind::StdioPi { server } = &server.kind {
+                        return Ok((server.clone(), None));
+                    }
+                }
+            }
+        }
+
+        let (server, stdout_rx, child) = self.spawn_pi_server().await?;
+        let restart_count = {
+            let servers = self.servers.lock().await;
+            servers
+                .get(&AgentId::Pi)
+                .map(|server| server.restart_count + 1)
+                .unwrap_or(0)
+        };
+
+        {
+            let mut servers = self.servers.lock().await;
+            if let Some(existing) = servers.get(&AgentId::Pi) {
+                if matches!(existing.status, ServerStatus::Running) {
+                    if let Ok(mut guard) = child.lock() {
+                        if let Some(child) = guard.as_mut() {
+                            let _ = child.kill();
+                        }
+                    }
+                    if let ManagedServerKind::StdioPi { server } = &existing.kind {
+                        return Ok((server.clone(), None));
+                    }
+                }
+            }
+            servers.insert(
+                AgentId::Pi,
+                ManagedServer {
+                    kind: ManagedServerKind::StdioPi {
+                        server: server.clone(),
+                    },
+                    child: child.clone(),
+                    status: ServerStatus::Running,
+                    start_time: Some(Instant::now()),
+                    restart_count,
+                    last_error: None,
+                    shutdown_requested: false,
+                    instance_id: restart_count,
+                },
+            );
+        }
+
+        self.spawn_monitor_task(AgentId::Pi, restart_count, child);
+
+        Ok((server, Some(stdout_rx)))
+    }
+
     async fn shutdown(&self) {
         let mut servers = self.servers.lock().await;
         for server in servers.values_mut() {
@@ -1113,9 +1352,13 @@ impl AgentServerManager {
                     let _ = child.kill();
                 }
             }
-            if let ManagedServerKind::Stdio { server } = &server.kind {
+            if let ManagedServerKind::StdioCodex { server } = &server.kind {
                 server.clear_pending();
                 server.clear_threads();
+            }
+            if let ManagedServerKind::StdioPi { server } = &server.kind {
+                server.clear_pending();
+                server.clear_sessions();
             }
         }
     }
@@ -1258,6 +1501,95 @@ impl AgentServerManager {
         ))
     }
 
+    async fn spawn_pi_server(
+        self: &Arc<Self>,
+    ) -> Result<
+        (
+            Arc<PiServer>,
+            mpsc::UnboundedReceiver<String>,
+            Arc<std::sync::Mutex<Option<std::process::Child>>>,
+        ),
+        SandboxError,
+    > {
+        let manager = self.agent_manager.clone();
+        let log_dir = self.log_base_dir.clone();
+        let (stdin_tx, stdin_rx) = mpsc::unbounded_channel::<String>();
+        let (stdout_tx, stdout_rx) = mpsc::unbounded_channel::<String>();
+
+        let child = tokio::task::spawn_blocking(
+            move || -> Result<(std::process::Child, PiRpcDialect), SandboxError> {
+                let path = manager
+                    .resolve_binary(AgentId::Pi)
+                    .map_err(|err| map_spawn_error(AgentId::Pi, err))?;
+                let dialect = detect_pi_dialect(&path);
+                let mut command = std::process::Command::new(path);
+                let stderr = AgentServerLogs::new(log_dir, AgentId::Pi.as_str()).open()?;
+                command
+                    .arg("--mode")
+                    .arg("rpc")
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(stderr);
+
+                let mut child = command.spawn().map_err(|err| SandboxError::StreamError {
+                    message: err.to_string(),
+                })?;
+
+                let stdin = child
+                    .stdin
+                    .take()
+                    .ok_or_else(|| SandboxError::StreamError {
+                        message: "pi stdin unavailable".to_string(),
+                    })?;
+                let stdout = child
+                    .stdout
+                    .take()
+                    .ok_or_else(|| SandboxError::StreamError {
+                        message: "pi stdout unavailable".to_string(),
+                    })?;
+
+                let stdin_rx_mut = std::sync::Mutex::new(stdin_rx);
+                std::thread::spawn(move || {
+                    let mut stdin = stdin;
+                    let mut rx = stdin_rx_mut.lock().unwrap();
+                    while let Some(line) = rx.blocking_recv() {
+                        if writeln!(stdin, "{line}").is_err() {
+                            break;
+                        }
+                        if stdin.flush().is_err() {
+                            break;
+                        }
+                    }
+                });
+
+                std::thread::spawn(move || {
+                    let reader = BufReader::new(stdout);
+                    for line in reader.lines() {
+                        let Ok(line) = line else { break };
+                        if stdout_tx.send(line).is_err() {
+                            break;
+                        }
+                    }
+                });
+
+                Ok((child, dialect))
+            },
+        )
+        .await
+            .map_err(|err| SandboxError::StreamError {
+                message: err.to_string(),
+            })??;
+
+        let (child, dialect) = child;
+        let server = Arc::new(PiServer::new(stdin_tx, dialect));
+
+        Ok((
+            server,
+            stdout_rx,
+            Arc::new(std::sync::Mutex::new(Some(child))),
+        ))
+    }
+
     fn spawn_monitor_task(
         self: &Arc<Self>,
         agent: AgentId,
@@ -1302,6 +1634,7 @@ impl AgentServerManager {
         let exit_code = status.code();
         let message = format!("agent server exited with status {:?}", status);
         let mut codex_server = None;
+        let mut pi_server = None;
         let mut shutdown_requested = false;
         {
             let mut servers = self.servers.lock().await;
@@ -1322,8 +1655,11 @@ impl AgentServerManager {
                 if let Ok(mut guard) = server.child.lock() {
                     *guard = None;
                 }
-                if let ManagedServerKind::Stdio { server } = &server.kind {
+                if let ManagedServerKind::StdioCodex { server } = &server.kind {
                     codex_server = Some(server.clone());
+                }
+                if let ManagedServerKind::StdioPi { server } = &server.kind {
+                    pi_server = Some(server.clone());
                 }
             }
         }
@@ -1331,6 +1667,10 @@ impl AgentServerManager {
         if let Some(server) = codex_server {
             server.clear_pending();
             server.clear_threads();
+        }
+        if let Some(server) = pi_server {
+            server.clear_pending();
+            server.clear_sessions();
         }
 
         if shutdown_requested {
@@ -1377,6 +1717,21 @@ impl AgentServerManager {
                                 .await;
                         });
                         let _ = owner.codex_server_initialize(&server).await;
+                    }
+                }
+            }
+            AgentId::Pi => {
+                let (server, receiver) = self.ensure_pi_server().await?;
+                if let Some(stdout_rx) = receiver {
+                    let owner = self.owner.lock().expect("owner lock").clone();
+                    if let Some(owner) = owner.as_ref().and_then(|weak| weak.upgrade()) {
+                        let owner_clone = owner.clone();
+                        let server_clone = server.clone();
+                        tokio::spawn(async move {
+                            owner_clone
+                                .handle_pi_server_output(server_clone, stdout_rx)
+                                .await;
+                        });
                     }
                 }
             }
@@ -1442,9 +1797,12 @@ impl AgentServerManager {
 impl SessionManager {
     fn new(agent_manager: Arc<AgentManager>) -> Self {
         let log_base_dir = default_log_dir();
+        let http_client = http_client::client_builder()
+            .build()
+            .expect("failed to build http client");
         let server_manager = Arc::new(AgentServerManager::new(
             agent_manager.clone(),
-            Client::new(),
+            http_client.clone(),
             log_base_dir,
             true,
         ));
@@ -1452,7 +1810,7 @@ impl SessionManager {
             agent_manager,
             sessions: Mutex::new(Vec::new()),
             server_manager,
-            http_client: Client::new(),
+            http_client,
         }
     }
 
@@ -1533,6 +1891,19 @@ impl SessionManager {
             let thread_id = self.create_codex_thread(&session_id, &snapshot).await?;
             session.native_session_id = Some(thread_id);
         }
+        if agent_id == AgentId::Pi {
+            let snapshot = SessionSnapshot {
+                session_id: session_id.clone(),
+                agent: agent_id,
+                agent_mode: session.agent_mode.clone(),
+                permission_mode: session.permission_mode.clone(),
+                model: session.model.clone(),
+                variant: session.variant.clone(),
+                native_session_id: None,
+            };
+            let native_id = self.create_pi_session(&session_id, &snapshot).await?;
+            session.native_session_id = Some(native_id);
+        }
         if agent_id == AgentId::Mock {
             session.native_session_id = Some(format!("mock-{session_id}"));
         }
@@ -1569,7 +1940,7 @@ impl SessionManager {
         let mut sessions = self.sessions.lock().await;
         sessions.push(session);
         drop(sessions);
-        if agent_id == AgentId::Opencode || agent_id == AgentId::Codex {
+        if agent_id == AgentId::Opencode || agent_id == AgentId::Codex || agent_id == AgentId::Pi {
             self.server_manager
                 .register_session(agent_id, &session_id, native_session_id.as_deref())
                 .await;
@@ -1615,7 +1986,10 @@ impl SessionManager {
             self.send_mock_message(session_id, message).await?;
             return Ok(());
         }
-        if matches!(session_snapshot.agent, AgentId::Claude | AgentId::Amp) {
+        if matches!(
+            session_snapshot.agent,
+            AgentId::Claude | AgentId::Amp | AgentId::Pi
+        ) {
             let _ = self
                 .record_conversions(&session_id, user_message_conversions(&message))
                 .await;
@@ -1634,6 +2008,15 @@ impl SessionManager {
         if session_snapshot.agent == AgentId::Codex {
             // Use the shared Codex app-server
             self.send_codex_turn(&session_snapshot, &message).await?;
+            if !agent_supports_item_started(session_snapshot.agent) {
+                let _ = self
+                    .emit_synthetic_assistant_start(&session_snapshot.session_id)
+                    .await;
+            }
+            return Ok(());
+        }
+        if session_snapshot.agent == AgentId::Pi {
+            self.send_pi_prompt(&session_snapshot, &message).await?;
             if !agent_supports_item_started(session_snapshot.agent) {
                 let _ = self
                     .emit_synthetic_assistant_start(&session_snapshot.session_id)
@@ -1750,7 +2133,7 @@ impl SessionManager {
         let agent = session.agent;
         let native_session_id = session.native_session_id.clone();
         drop(sessions);
-        if agent == AgentId::Opencode || agent == AgentId::Codex {
+        if agent == AgentId::Opencode || agent == AgentId::Codex || agent == AgentId::Pi {
             self.server_manager
                 .unregister_session(agent, &session_id, native_session_id.as_deref())
                 .await;
@@ -3051,6 +3434,325 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Ensures a shared Pi RPC process is running.
+    async fn ensure_pi_server(self: &Arc<Self>) -> Result<Arc<PiServer>, SandboxError> {
+        let (server, receiver) = self.server_manager.ensure_pi_server().await?;
+
+        if let Some(stdout_rx) = receiver {
+            let server_for_task = server.clone();
+            let self_for_task = Arc::clone(self);
+            tokio::spawn(async move {
+                self_for_task
+                    .handle_pi_server_output(server_for_task, stdout_rx)
+                    .await;
+            });
+        }
+
+        Ok(server)
+    }
+
+    /// Handles output from the Pi RPC server, routing responses and events.
+    async fn handle_pi_server_output(
+        self: Arc<Self>,
+        server: Arc<PiServer>,
+        mut stdout_rx: mpsc::UnboundedReceiver<String>,
+    ) {
+        while let Some(line) = stdout_rx.recv().await {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            let value: Value = match serde_json::from_str(trimmed) {
+                Ok(v) => v,
+                Err(err) => {
+                    self.record_pi_unparsed(None, &err.to_string(), Value::String(trimmed.to_string()))
+                        .await;
+                    continue;
+                }
+            };
+
+            let message_type = value.get("type").and_then(Value::as_str).unwrap_or("");
+            if message_type == "response" {
+                let id = value
+                    .get("id")
+                    .and_then(Value::as_i64)
+                    .or_else(|| value.get("id").and_then(Value::as_str)?.parse::<i64>().ok());
+                if let Some(id) = id {
+                    server.complete_request(id, value.clone());
+                }
+                continue;
+            }
+
+            let native_session_id = extract_pi_session_id(&value).or_else(|| {
+                if server.dialect() == PiRpcDialect::CodingAgent {
+                    server.current_native_session_id()
+                } else {
+                    None
+                }
+            });
+            let session_id = native_session_id
+                .as_ref()
+                .and_then(|id| server.session_for_native(id))
+                .or_else(|| {
+                    if server.dialect() == PiRpcDialect::CodingAgent {
+                        server.current_session_id()
+                    } else {
+                        None
+                    }
+                });
+            let Some(session_id) = session_id else {
+                self.record_pi_unparsed(
+                    None,
+                    "pi event missing session id",
+                    value.clone(),
+                )
+                .await;
+                continue;
+            };
+
+            let event: pi_schema::RpcEvent = match serde_json::from_value(value.clone()) {
+                Ok(event) => event,
+                Err(err) => {
+                    self.record_pi_unparsed(Some(session_id.clone()), &err.to_string(), value.clone())
+                        .await;
+                    continue;
+                }
+            };
+
+            let conversions = {
+                let mut converters = server.converters.lock().unwrap();
+                let key = native_session_id
+                    .clone()
+                    .unwrap_or_else(|| session_id.clone());
+                let converter = converters
+                    .entry(key)
+                    .or_insert_with(convert_pi::PiEventConverter::default);
+                converter.event_to_universal(&event)
+            };
+
+            let mut conversions = match conversions {
+                Ok(conversions) => conversions,
+                Err(err) => {
+                    self.record_pi_unparsed(Some(session_id.clone()), &err, value.clone())
+                        .await;
+                    continue;
+                }
+            };
+
+            for conversion in &mut conversions {
+                if conversion.native_session_id.is_none() {
+                    conversion.native_session_id = native_session_id.clone();
+                }
+                conversion.raw = Some(value.clone());
+            }
+
+            let _ = self.record_conversions(&session_id, conversions).await;
+        }
+    }
+
+    async fn create_pi_session(
+        self: &Arc<Self>,
+        session_id: &str,
+        _session: &SessionSnapshot,
+    ) -> Result<String, SandboxError> {
+        let server = self.ensure_pi_server().await?;
+        if server.dialect() == PiRpcDialect::CodingAgent && server.current_session_id().is_some() {
+            return Err(SandboxError::InvalidRequest {
+                message:
+                    "pi-coding-agent supports a single active session; terminate it before creating a new session"
+                        .to_string(),
+            });
+        }
+
+        let id = server.next_request_id();
+        let request = match server.dialect() {
+            PiRpcDialect::Mono => json!({
+                "type": "command",
+                "id": id,
+                "command": "new_session",
+                "params": { "sessionName": session_id }
+            }),
+            PiRpcDialect::CodingAgent => json!({
+                "type": "new_session",
+                "id": id
+            }),
+        };
+
+        let rx = server
+            .send_request(id, &request)
+            .ok_or_else(|| SandboxError::StreamError {
+                message: "failed to send pi new_session request".to_string(),
+            })?;
+
+        let result = tokio::time::timeout(Duration::from_secs(30), rx).await;
+        match result {
+            Ok(Ok(response)) => {
+                if response
+                    .get("success")
+                    .and_then(Value::as_bool)
+                    .is_some_and(|success| !success)
+                {
+                    return Err(SandboxError::StreamError {
+                        message: format!("pi new_session failed: {response}"),
+                    });
+                }
+                if response
+                    .get("data")
+                    .and_then(|value| value.get("cancelled"))
+                    .and_then(Value::as_bool)
+                    .is_some_and(|cancelled| cancelled)
+                {
+                    return Err(SandboxError::StreamError {
+                        message: "pi new_session request cancelled".to_string(),
+                    });
+                }
+
+                let native_session_id = if server.dialect() == PiRpcDialect::CodingAgent {
+                    let state_id = server.next_request_id();
+                    let request = json!({
+                        "type": "get_state",
+                        "id": state_id
+                    });
+                    let rx = server
+                        .send_request(state_id, &request)
+                        .ok_or_else(|| SandboxError::StreamError {
+                            message: "failed to send pi get_state request".to_string(),
+                        })?;
+                    let result = tokio::time::timeout(Duration::from_secs(30), rx).await;
+                    let response = match result {
+                        Ok(Ok(response)) => response,
+                        Ok(Err(_)) => {
+                            return Err(SandboxError::StreamError {
+                                message: "pi get_state request cancelled".to_string(),
+                            })
+                        }
+                        Err(_) => {
+                            return Err(SandboxError::StreamError {
+                                message: "pi get_state request timed out".to_string(),
+                            })
+                        }
+                    };
+                    if response
+                        .get("success")
+                        .and_then(Value::as_bool)
+                        .is_some_and(|success| !success)
+                    {
+                        return Err(SandboxError::StreamError {
+                            message: format!("pi get_state failed: {response}"),
+                        });
+                    }
+                    let session_value = response.get("data").unwrap_or(&response);
+                    session_value
+                        .get("sessionId")
+                        .or_else(|| session_value.get("session_id"))
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| SandboxError::StreamError {
+                            message: "pi get_state response missing session id".to_string(),
+                        })?
+                        .to_string()
+                } else {
+                    let session_value = response.get("data").unwrap_or(&response);
+                    session_value
+                        .get("sessionId")
+                        .or_else(|| session_value.get("session_id"))
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| SandboxError::StreamError {
+                            message: "pi new_session response missing session id".to_string(),
+                        })?
+                        .to_string()
+                };
+
+                server.register_session(native_session_id.clone(), session_id.to_string());
+
+                Ok(native_session_id)
+            }
+            Ok(Err(_)) => Err(SandboxError::StreamError {
+                message: "pi new_session request cancelled".to_string(),
+            }),
+            Err(_) => Err(SandboxError::StreamError {
+                message: "pi new_session request timed out".to_string(),
+            }),
+        }
+    }
+
+    async fn send_pi_prompt(
+        self: &Arc<Self>,
+        session: &SessionSnapshot,
+        prompt: &str,
+    ) -> Result<(), SandboxError> {
+        let server = self.ensure_pi_server().await?;
+        let native_session_id =
+            session
+                .native_session_id
+                .as_ref()
+                .ok_or_else(|| SandboxError::InvalidRequest {
+                    message: "missing Pi session id".to_string(),
+                })?;
+        if server.dialect() == PiRpcDialect::CodingAgent {
+            if let Some(current) = server.current_session_id() {
+                if current != session.session_id {
+                    return Err(SandboxError::InvalidRequest {
+                        message: "pi-coding-agent supports a single active session; prompt must target the current session"
+                            .to_string(),
+                    });
+                }
+            }
+        }
+
+        let id = server.next_request_id();
+        let request = match server.dialect() {
+            PiRpcDialect::Mono => json!({
+                "type": "command",
+                "id": id,
+                "command": "prompt",
+                "params": {
+                    "sessionId": native_session_id,
+                    "message": {
+                        "role": "user",
+                        "content": [{ "type": "text", "text": prompt }]
+                    }
+                }
+            }),
+            PiRpcDialect::CodingAgent => json!({
+                "type": "prompt",
+                "id": id,
+                "message": prompt
+            }),
+        };
+
+        server
+            .send_request(id, &request)
+            .ok_or_else(|| SandboxError::StreamError {
+                message: "failed to send pi prompt request".to_string(),
+            })?;
+
+        Ok(())
+    }
+
+    async fn record_pi_unparsed(&self, session_id: Option<String>, error: &str, raw: Value) {
+        if let Some(session_id) = session_id {
+            let _ = self
+                .record_conversions(&session_id, vec![agent_unparsed("pi", error, raw)])
+                .await;
+            return;
+        }
+        let session_ids = {
+            let sessions = self.server_manager.sessions.lock().await;
+            sessions
+                .get(&AgentId::Pi)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .collect::<Vec<_>>()
+        };
+        for session_id in session_ids {
+            let _ = self
+                .record_conversions(&session_id, vec![agent_unparsed("pi", error, raw.clone())])
+                .await;
+        }
+    }
+
     async fn fetch_opencode_modes(&self) -> Result<Vec<AgentModeInfo>, SandboxError> {
         let base_url = self.ensure_opencode_server().await?;
         let endpoints = [
@@ -3933,12 +4635,13 @@ async fn reply_permission(
     Ok(StatusCode::NO_CONTENT)
 }
 
-fn all_agents() -> [AgentId; 5] {
+fn all_agents() -> [AgentId; 6] {
     [
         AgentId::Claude,
         AgentId::Codex,
         AgentId::Opencode,
         AgentId::Amp,
+        AgentId::Pi,
         AgentId::Mock,
     ]
 }
@@ -3948,7 +4651,7 @@ fn all_agents() -> [AgentId; 5] {
 fn agent_supports_resume(agent: AgentId) -> bool {
     matches!(
         agent,
-        AgentId::Claude | AgentId::Amp | AgentId::Opencode | AgentId::Codex
+        AgentId::Claude | AgentId::Amp | AgentId::Opencode | AgentId::Codex | AgentId::Pi
     )
 }
 
@@ -4040,6 +4743,26 @@ fn agent_capabilities_for(agent: AgentId) -> AgentCapabilities {
             item_started: false,
             shared_process: false, // per-turn subprocess with --continue
         },
+        AgentId::Pi => AgentCapabilities {
+            plan_mode: false,
+            permissions: false,
+            questions: false,
+            tool_calls: true,
+            tool_results: true,
+            text_messages: true,
+            images: true,
+            file_attachments: false,
+            session_lifecycle: false,
+            error_events: true,
+            reasoning: true,
+            status: true,
+            command_execution: false,
+            file_changes: false,
+            mcp_tools: false,
+            streaming_deltas: true,
+            item_started: true,
+            shared_process: true, // shared stdio RPC
+        },
         AgentId::Mock => AgentCapabilities {
             plan_mode: true,
             permissions: true,
@@ -4117,6 +4840,11 @@ fn agent_modes_for(agent: AgentId) -> Vec<AgentModeInfo> {
             name: "Build".to_string(),
             description: "Default build mode".to_string(),
         }],
+        AgentId::Pi => vec![AgentModeInfo {
+            id: "build".to_string(),
+            name: "Build".to_string(),
+            description: "Default build mode".to_string(),
+        }],
         AgentId::Mock => vec![
             AgentModeInfo {
                 id: "build".to_string(),
@@ -4153,6 +4881,14 @@ fn normalize_agent_mode(agent: AgentId, agent_mode: Option<&str>) -> Result<Stri
             .into()),
         },
         AgentId::Amp => match mode {
+            "build" => Ok("build".to_string()),
+            value => Err(SandboxError::ModeNotSupported {
+                agent: agent.as_str().to_string(),
+                mode: value.to_string(),
+            }
+            .into()),
+        },
+        AgentId::Pi => match mode {
             "build" => Ok("build".to_string()),
             value => Err(SandboxError::ModeNotSupported {
                 agent: agent.as_str().to_string(),
@@ -4217,6 +4953,7 @@ fn normalize_permission_mode(
         AgentId::Codex => matches!(mode, "default" | "plan" | "bypass"),
         AgentId::Amp => matches!(mode, "default" | "bypass"),
         AgentId::Opencode => matches!(mode, "default"),
+        AgentId::Pi => matches!(mode, "default"),
         AgentId::Mock => matches!(mode, "default" | "plan" | "bypass"),
     };
     if !supported {
@@ -5002,6 +5739,11 @@ fn parse_agent_line(agent: AgentId, line: &str, session_id: &str) -> Vec<EventCo
                 .unwrap_or_else(|err| vec![agent_unparsed("amp", &err, value)]),
             Err(err) => vec![agent_unparsed("amp", &err.to_string(), value)],
         },
+        AgentId::Pi => match serde_json::from_value(value.clone()) {
+            Ok(event) => convert_pi::event_to_universal(&event)
+                .unwrap_or_else(|err| vec![agent_unparsed("pi", &err, value)]),
+            Err(err) => vec![agent_unparsed("pi", &err.to_string(), value)],
+        },
         AgentId::Mock => vec![agent_unparsed(
             "mock",
             "mock agent does not parse streaming output",
@@ -5037,6 +5779,28 @@ fn extract_opencode_session_id(value: &Value) -> Option<String> {
         return Some(id);
     }
     if let Some(id) = extract_nested_string(value, &["properties", "session", "id"]) {
+        return Some(id);
+    }
+    None
+}
+
+fn extract_pi_session_id(value: &Value) -> Option<String> {
+    if let Some(id) = value.get("sessionId").and_then(Value::as_str) {
+        return Some(id.to_string());
+    }
+    if let Some(id) = value.get("session_id").and_then(Value::as_str) {
+        return Some(id.to_string());
+    }
+    if let Some(id) = extract_nested_string(value, &["session", "id"]) {
+        return Some(id);
+    }
+    if let Some(id) = extract_nested_string(value, &["message", "sessionId"]) {
+        return Some(id);
+    }
+    if let Some(id) = extract_nested_string(value, &["message", "session_id"]) {
+        return Some(id);
+    }
+    if let Some(id) = extract_nested_string(value, &["params", "sessionId"]) {
         return Some(id);
     }
     None
@@ -5167,7 +5931,7 @@ pub mod test_utils {
                 .insert(
                     agent,
                     ManagedServer {
-                        kind: ManagedServerKind::Stdio { server },
+                        kind: ManagedServerKind::StdioCodex { server },
                         child: child.clone(),
                         status: ServerStatus::Running,
                         start_time: Some(Instant::now()),

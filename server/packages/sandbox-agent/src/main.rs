@@ -11,6 +11,7 @@ mod build_version {
 }
 use reqwest::blocking::Client as HttpClient;
 use reqwest::Method;
+use sandbox_agent::http_client;
 use sandbox_agent::router::{build_router_with_state, shutdown_servers};
 use sandbox_agent::router::{
     AgentInstallRequest, AppState, AuthConfig, CreateSessionRequest, MessageRequest,
@@ -687,6 +688,7 @@ enum CredentialAgent {
     Codex,
     Opencode,
     Amp,
+    Pi,
 }
 
 fn credentials_to_output(credentials: ExtractedCredentials, reveal: bool) -> CredentialsOutput {
@@ -806,6 +808,31 @@ fn select_token_for_agent(
                 )))
             }
         }
+        CredentialAgent::Pi => {
+            if let Some(provider) = provider {
+                return select_token_for_provider(credentials, provider);
+            }
+            if let Some(openai) = credentials.openai.as_ref() {
+                return Ok(openai.api_key.clone());
+            }
+            if let Some(anthropic) = credentials.anthropic.as_ref() {
+                return Ok(anthropic.api_key.clone());
+            }
+            if credentials.other.len() == 1 {
+                if let Some((_, cred)) = credentials.other.iter().next() {
+                    return Ok(cred.api_key.clone());
+                }
+            }
+            let available = available_providers(credentials);
+            if available.is_empty() {
+                Err(CliError::Server("no credentials found for pi".to_string()))
+            } else {
+                Err(CliError::Server(format!(
+                    "multiple providers available for pi: {} (use --provider)",
+                    available.join(", ")
+                )))
+            }
+        }
     }
 }
 
@@ -919,7 +946,7 @@ impl ClientContext {
         } else {
             cli.token.clone()
         };
-        let client = HttpClient::builder().build()?;
+        let client = http_client::blocking_client_builder().build()?;
         Ok(Self {
             endpoint,
             token,

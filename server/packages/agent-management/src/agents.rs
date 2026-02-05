@@ -7,7 +7,6 @@ use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitSta
 use std::time::{Duration, Instant};
 
 use flate2::read::GzDecoder;
-use reqwest::blocking::Client;
 use sandbox_agent_extracted_agent_schemas::codex as codex_schema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -21,6 +20,7 @@ pub enum AgentId {
     Codex,
     Opencode,
     Amp,
+    Pi,
     Mock,
 }
 
@@ -31,17 +31,55 @@ impl AgentId {
             AgentId::Codex => "codex",
             AgentId::Opencode => "opencode",
             AgentId::Amp => "amp",
+            AgentId::Pi => "pi",
             AgentId::Mock => "mock",
         }
     }
 
     pub fn binary_name(self) -> &'static str {
         match self {
-            AgentId::Claude => "claude",
-            AgentId::Codex => "codex",
-            AgentId::Opencode => "opencode",
-            AgentId::Amp => "amp",
-            AgentId::Mock => "mock",
+            AgentId::Claude => {
+                if cfg!(windows) {
+                    "claude.exe"
+                } else {
+                    "claude"
+                }
+            }
+            AgentId::Codex => {
+                if cfg!(windows) {
+                    "codex.exe"
+                } else {
+                    "codex"
+                }
+            }
+            AgentId::Opencode => {
+                if cfg!(windows) {
+                    "opencode.exe"
+                } else {
+                    "opencode"
+                }
+            }
+            AgentId::Amp => {
+                if cfg!(windows) {
+                    "amp.exe"
+                } else {
+                    "amp"
+                }
+            }
+            AgentId::Pi => {
+                if cfg!(windows) {
+                    "pi.exe"
+                } else {
+                    "pi"
+                }
+            }
+            AgentId::Mock => {
+                if cfg!(windows) {
+                    "mock.exe"
+                } else {
+                    "mock"
+                }
+            }
         }
     }
 
@@ -51,6 +89,7 @@ impl AgentId {
             "codex" => Some(AgentId::Codex),
             "opencode" => Some(AgentId::Opencode),
             "amp" => Some(AgentId::Amp),
+            "pi" => Some(AgentId::Pi),
             "mock" => Some(AgentId::Mock),
             _ => None,
         }
@@ -151,6 +190,7 @@ impl AgentManager {
                 install_opencode(&install_path, self.platform, options.version.as_deref())?
             }
             AgentId::Amp => install_amp(&install_path, self.platform, options.version.as_deref())?,
+            AgentId::Pi => install_pi(&install_path, self.platform, options.version.as_deref())?,
             AgentId::Mock => {
                 if !install_path.exists() {
                     fs::write(&install_path, b"mock")?;
@@ -282,6 +322,11 @@ impl AgentManager {
                     session_id: extract_session_id(agent, &events),
                     result: extract_result_text(agent, &events),
                     events,
+                });
+            }
+            AgentId::Pi => {
+                return Err(AgentError::UnsupportedAgent {
+                    agent: agent.as_str().to_string(),
                 });
             }
             AgentId::Mock => {
@@ -619,6 +664,11 @@ impl AgentManager {
             AgentId::Amp => {
                 return Ok(build_amp_command(&path, &working_dir, options));
             }
+            AgentId::Pi => {
+                return Err(AgentError::UnsupportedAgent {
+                    agent: agent.as_str().to_string(),
+                });
+            }
             AgentId::Mock => {
                 return Err(AgentError::UnsupportedAgent {
                     agent: agent.as_str().to_string(),
@@ -940,6 +990,7 @@ fn extract_session_id(agent: AgentId, events: &[Value]) -> Option<String> {
                     return Some(id);
                 }
             }
+            AgentId::Pi => {}
             AgentId::Mock => {}
         }
     }
@@ -1022,6 +1073,7 @@ fn extract_result_text(agent: AgentId, events: &[Value]) -> Option<String> {
                 Some(buffer)
             }
         }
+        AgentId::Pi => None,
         AgentId::Mock => None,
     }
 }
@@ -1200,7 +1252,7 @@ fn default_install_dir() -> PathBuf {
 }
 
 fn download_bytes(url: &Url) -> Result<Vec<u8>, AgentError> {
-    let client = Client::builder().build()?;
+    let client = crate::http_client::blocking_client_builder().build()?;
     let mut response = client.get(url.clone()).send()?;
     if !response.status().is_success() {
         return Err(AgentError::DownloadFailed { url: url.clone() });
@@ -1208,6 +1260,28 @@ fn download_bytes(url: &Url) -> Result<Vec<u8>, AgentError> {
     let mut bytes = Vec::new();
     response.read_to_end(&mut bytes)?;
     Ok(bytes)
+}
+
+fn install_pi(path: &Path, platform: Platform, version: Option<&str>) -> Result<(), AgentError> {
+    let asset = match platform {
+        Platform::LinuxX64 | Platform::LinuxX64Musl => "pi-linux-x64",
+        Platform::LinuxArm64 => "pi-linux-arm64",
+        Platform::MacosArm64 => "pi-darwin-arm64",
+        Platform::MacosX64 => "pi-darwin-x64",
+    }
+    .to_string();
+    let url = match version {
+        Some(version) => Url::parse(&format!(
+            "https://upd.dev/badlogic/pi-mono/releases/download/{version}/{asset}"
+        ))?,
+        None => Url::parse(&format!(
+            "https://upd.dev/badlogic/pi-mono/releases/latest/download/{asset}"
+        ))?,
+    };
+
+    let bytes = download_bytes(&url)?;
+    write_executable(path, &bytes)?;
+    Ok(())
 }
 
 fn install_claude(
@@ -1329,7 +1403,7 @@ fn install_opencode(
             };
             install_zip_binary(path, &url, "opencode")
         }
-        _ => {
+        Platform::LinuxX64 | Platform::LinuxX64Musl | Platform::LinuxArm64 => {
             let platform_segment = match platform {
                 Platform::LinuxX64 => "linux-x64",
                 Platform::LinuxX64Musl => "linux-x64-musl",

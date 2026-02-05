@@ -19,7 +19,7 @@ import type { RequestLog } from "./types/requestLog";
 import { buildCurl } from "./utils/http";
 
 const logoUrl = `${import.meta.env.BASE_URL}logos/sandboxagent.svg`;
-const defaultAgents = ["claude", "codex", "opencode", "amp", "mock"];
+const defaultAgents = ["claude", "codex", "opencode", "amp", "pi", "mock"];
 
 type ItemEventData = {
   item: UniversalItem;
@@ -29,6 +29,18 @@ type ItemDeltaEventData = {
   item_id: string;
   native_item_id?: string | null;
   delta: string;
+};
+
+const shouldHidePiStatusItem = (item: UniversalItem) => {
+  if (item.kind !== "status") return false;
+  const statusParts = (item.content ?? []).filter(
+    (part) => (part as { type?: string }).type === "status"
+  ) as Array<{ label?: string }>;
+  if (statusParts.length === 0) return false;
+  return statusParts.every((part) => {
+    const label = part.label ?? "";
+    return label.startsWith("pi.turn_") || label.startsWith("pi.agent_");
+  });
 };
 
 const buildStubItem = (itemId: string, nativeItemId?: string | null): UniversalItem => {
@@ -734,7 +746,10 @@ export default function App() {
       }
     }
 
-    return entries;
+    return entries.filter((entry) => {
+      if (entry.kind !== "item" || !entry.item) return true;
+      return !shouldHidePiStatusItem(entry.item);
+    });
   }, [events]);
 
   useEffect(() => {
@@ -841,6 +856,7 @@ export default function App() {
     codex: "Codex",
     opencode: "OpenCode",
     amp: "Amp",
+    pi: "Pi",
     mock: "Mock"
   };
   const agentLabel = agentDisplayNames[agentId] ?? agentId;
