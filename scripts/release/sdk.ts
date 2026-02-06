@@ -147,7 +147,9 @@ export async function publishCrates(opts: ReleaseOpts) {
 	console.log("==> Publishing crates to crates.io");
 
 	for (const crate of CRATES) {
-		const cratePath = join(opts.root, "server/packages", crate);
+		const cratePath = crate === "gigacode"
+			? join(opts.root, "gigacode")
+			: join(opts.root, "server/packages", crate);
 
 		// Read Cargo.toml to get the actual crate name
 		const cargoTomlPath = join(cratePath, "Cargo.toml");
