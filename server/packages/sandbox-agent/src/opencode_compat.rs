@@ -1394,6 +1394,38 @@ fn emit_file_edited(state: &OpenCodeState, path: &str) {
     }));
 }
 
+fn emit_session_idle(state: &OpenCodeState, session_id: &str) {
+    state.emit_event(json!({
+        "type": "session.status",
+        "properties": {"sessionID": session_id, "status": {"type": "idle"}}
+    }));
+    state.emit_event(json!({
+        "type": "session.idle",
+        "properties": {"sessionID": session_id}
+    }));
+}
+
+fn emit_session_error(
+    state: &OpenCodeState,
+    session_id: &str,
+    message: &str,
+    code: Option<&str>,
+    details: Option<Value>,
+) {
+    let mut error = serde_json::Map::new();
+    error.insert("data".to_string(), json!({"message": message}));
+    if let Some(code) = code {
+        error.insert("code".to_string(), json!(code));
+    }
+    if let Some(details) = details {
+        error.insert("details".to_string(), details);
+    }
+    state.emit_event(json!({
+        "type": "session.error",
+        "properties": {"sessionID": session_id, "error": Value::Object(error)}
+    }));
+}
+
 fn permission_event(event_type: &str, permission: &Value) -> Value {
     json!({
         "type": event_type,
@@ -1626,17 +1658,15 @@ async fn apply_universal_event(state: Arc<OpenCodeAppState>, event: UniversalEve
         }
         UniversalEventType::Error => {
             if let UniversalEventData::Error(error) = &event.data {
-                state.opencode.emit_event(json!({
-                    "type": "session.error",
-                    "properties": {
-                        "sessionID": event.session_id,
-                        "error": {
-                            "data": {"message": error.message},
-                            "code": error.code,
-                            "details": error.details,
-                        }
-                    }
-                }));
+                let session_id = event.session_id.clone();
+                emit_session_error(
+                    &state.opencode,
+                    &session_id,
+                    &error.message,
+                    error.code.as_deref(),
+                    error.details.clone(),
+                );
+                emit_session_idle(&state.opencode, &session_id);
             }
         }
         _ => {}
@@ -3400,6 +3430,9 @@ async fn oc_session_message_create(
             ?err,
             "failed to ensure backing session"
         );
+        emit_session_error(&state.opencode, &session_id, &err.to_string(), None, None);
+        emit_session_idle(&state.opencode, &session_id);
+        return sandbox_error_response(err).into_response();
     } else {
         ensure_session_stream(state.clone(), session_id.clone()).await;
     }
@@ -3421,6 +3454,9 @@ async fn oc_session_message_create(
                 ?err,
                 "failed to send message to backing agent"
             );
+            emit_session_error(&state.opencode, &session_id, &err.to_string(), None, None);
+            emit_session_idle(&state.opencode, &session_id);
+            return sandbox_error_response(err).into_response();
         }
     }
 
