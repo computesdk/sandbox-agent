@@ -217,6 +217,56 @@ fn pi_unknown_event_returns_error() {
 }
 
 #[test]
+fn pi_turn_and_agent_end_emit_terminal_status_labels() {
+    let mut converter = PiEventConverter::default();
+
+    let turn_end = parse_event(json!({
+        "type": "turn_end",
+        "sessionId": "session-1"
+    }));
+    let turn_events = converter
+        .event_to_universal(&turn_end)
+        .expect("turn_end conversions");
+    assert_eq!(turn_events[0].event_type, UniversalEventType::ItemCompleted);
+    if let UniversalEventData::Item(item) = &turn_events[0].data {
+        assert_eq!(item.item.kind, ItemKind::Status);
+        assert!(
+            matches!(
+                item.item.content.first(),
+                Some(ContentPart::Status { label, .. }) if label == "turn.completed"
+            ),
+            "turn_end should map to turn.completed status"
+        );
+    } else {
+        panic!("expected item event");
+    }
+
+    let agent_end = parse_event(json!({
+        "type": "agent_end",
+        "sessionId": "session-1"
+    }));
+    let agent_events = converter
+        .event_to_universal(&agent_end)
+        .expect("agent_end conversions");
+    assert_eq!(
+        agent_events[0].event_type,
+        UniversalEventType::ItemCompleted
+    );
+    if let UniversalEventData::Item(item) = &agent_events[0].data {
+        assert_eq!(item.item.kind, ItemKind::Status);
+        assert!(
+            matches!(
+                item.item.content.first(),
+                Some(ContentPart::Status { label, .. }) if label == "session.idle"
+            ),
+            "agent_end should map to session.idle status"
+        );
+    } else {
+        panic!("expected item event");
+    }
+}
+
+#[test]
 fn pi_message_done_completes_without_message_end() {
     let mut converter = PiEventConverter::default();
 
@@ -261,6 +311,63 @@ fn pi_message_done_completes_without_message_end() {
     } else {
         panic!("expected item event");
     }
+}
+
+#[test]
+fn pi_message_done_then_message_end_does_not_double_complete() {
+    let mut converter = PiEventConverter::default();
+
+    let start_event = parse_event(json!({
+        "type": "message_start",
+        "sessionId": "session-1",
+        "messageId": "msg-1",
+        "message": {
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "Hello" }]
+        }
+    }));
+    let _ = converter
+        .event_to_universal(&start_event)
+        .expect("start conversions");
+
+    let update_event = parse_event(json!({
+        "type": "message_update",
+        "sessionId": "session-1",
+        "messageId": "msg-1",
+        "assistantMessageEvent": { "type": "text_delta", "delta": " world" }
+    }));
+    let _ = converter
+        .event_to_universal(&update_event)
+        .expect("update conversions");
+
+    let done_event = parse_event(json!({
+        "type": "message_update",
+        "sessionId": "session-1",
+        "messageId": "msg-1",
+        "assistantMessageEvent": { "type": "done" }
+    }));
+    let done_events = converter
+        .event_to_universal(&done_event)
+        .expect("done conversions");
+    assert_eq!(done_events.len(), 1);
+    assert_eq!(done_events[0].event_type, UniversalEventType::ItemCompleted);
+
+    let end_event = parse_event(json!({
+        "type": "message_end",
+        "sessionId": "session-1",
+        "messageId": "msg-1",
+        "message": {
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "Hello world" }]
+        }
+    }));
+    let end_events = converter
+        .event_to_universal(&end_event)
+        .expect("end conversions");
+    assert!(
+        end_events.is_empty(),
+        "message_end after done should not emit a second completion"
+    );
 }
 
 #[test]

@@ -183,7 +183,10 @@ async fn pi_variant_high_applies_for_thinking_model() {
     create_pi_session(&app.app, session_id, Some(&model_id), Some("high")).await;
 
     let events = read_turn_stream_events(&app.app, session_id, Duration::from_secs(120)).await;
-    assert!(!events.is_empty(), "no events from pi thinking-variant stream");
+    assert!(
+        !events.is_empty(),
+        "no events from pi thinking-variant stream"
+    );
     assert!(
         !events.iter().any(is_unparsed_event),
         "agent.unparsed event encountered for thinking-variant session"

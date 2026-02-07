@@ -12,6 +12,7 @@ use crate::{
 pub struct PiEventConverter {
     tool_result_buffers: HashMap<String, String>,
     tool_result_started: HashSet<String>,
+    message_completed: HashSet<String>,
     message_errors: HashSet<String>,
     message_reasoning: HashMap<String, String>,
     message_text: HashMap<String, String>,
@@ -121,6 +122,7 @@ impl PiEventConverter {
             return Ok(Vec::new());
         }
         let message_id = self.ensure_message_id(extract_message_id(raw));
+        self.message_completed.remove(&message_id);
         self.message_started.insert(message_id.clone());
         let content = message.and_then(parse_message_content).unwrap_or_default();
         let entry = self.message_text.entry(message_id.clone()).or_default();
@@ -210,15 +212,24 @@ impl PiEventConverter {
                     self.clear_last_message_id(Some(&message_id));
                     return Ok(Vec::new());
                 }
+                if self.message_completed.contains(&message_id) {
+                    self.clear_last_message_id(Some(&message_id));
+                    return Ok(Vec::new());
+                }
                 let message = raw
                     .get("message")
                     .or_else(|| assistant_event.get("message"));
                 let conversion = self.complete_message(Some(message_id.clone()), message);
+                self.message_completed.insert(message_id.clone());
                 self.clear_last_message_id(Some(&message_id));
                 Ok(vec![conversion])
             }
             "error" => {
                 let message_id = self.ensure_message_id(message_id);
+                if self.message_completed.contains(&message_id) {
+                    self.clear_last_message_id(Some(&message_id));
+                    return Ok(Vec::new());
+                }
                 let error_text = assistant_event
                     .get("error")
                     .or_else(|| raw.get("error"))
@@ -228,6 +239,7 @@ impl PiEventConverter {
                 self.message_text.remove(&message_id);
                 self.message_errors.insert(message_id.clone());
                 self.message_started.remove(&message_id);
+                self.message_completed.insert(message_id.clone());
                 self.clear_last_message_id(Some(&message_id));
                 let item = UniversalItem {
                     item_id: String::new(),
@@ -261,7 +273,12 @@ impl PiEventConverter {
             self.clear_last_message_id(Some(&message_id));
             return Ok(Vec::new());
         }
+        if self.message_completed.contains(&message_id) {
+            self.clear_last_message_id(Some(&message_id));
+            return Ok(Vec::new());
+        }
         let conversion = self.complete_message(Some(message_id.clone()), message);
+        self.message_completed.insert(message_id.clone());
         self.clear_last_message_id(Some(&message_id));
         Ok(vec![conversion])
     }
@@ -479,7 +496,7 @@ fn status_event(label: &str, raw: &Value) -> EventConversion {
         kind: ItemKind::Status,
         role: Some(ItemRole::System),
         content: vec![ContentPart::Status {
-            label: format!("pi.{label}"),
+            label: pi_status_label(label),
             detail,
         }],
         status: ItemStatus::Completed,
@@ -488,6 +505,14 @@ fn status_event(label: &str, raw: &Value) -> EventConversion {
         UniversalEventType::ItemCompleted,
         UniversalEventData::Item(ItemEventData { item }),
     )
+}
+
+fn pi_status_label(label: &str) -> String {
+    match label {
+        "turn_end" => "turn.completed".to_string(),
+        "agent_end" => "session.idle".to_string(),
+        _ => format!("pi.{label}"),
+    }
 }
 
 fn item_delta(message_id: Option<String>, delta: String) -> EventConversion {

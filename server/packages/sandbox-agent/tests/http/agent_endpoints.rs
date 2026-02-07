@@ -241,7 +241,10 @@ async fn pi_capabilities_and_models_expose_variants() {
             .iter()
             .filter_map(Value::as_str)
             .collect::<Vec<_>>();
-        assert!(!variant_ids.is_empty(), "pi model {model_id} has no variants");
+        assert!(
+            !variant_ids.is_empty(),
+            "pi model {model_id} has no variants"
+        );
         if variant_ids == vec!["off"] {
             assert_eq!(
                 default_variant, "off",

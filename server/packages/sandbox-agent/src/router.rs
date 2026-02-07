@@ -3863,11 +3863,12 @@ impl SessionManager {
             "message": prompt
         });
 
-        let response_rx = runtime
-            .send_request(id, &request)
-            .ok_or_else(|| SandboxError::StreamError {
-                message: "failed to send pi prompt request".to_string(),
-            })?;
+        let response_rx =
+            runtime
+                .send_request(id, &request)
+                .ok_or_else(|| SandboxError::StreamError {
+                    message: "failed to send pi prompt request".to_string(),
+                })?;
         let response = tokio::time::timeout(Duration::from_secs(30), response_rx)
             .await
             .map_err(|_| SandboxError::StreamError {
@@ -3884,7 +3885,12 @@ impl SessionManager {
             let detail = response
                 .get("error")
                 .cloned()
-                .or_else(|| response.get("data").and_then(|data| data.get("error")).cloned())
+                .or_else(|| {
+                    response
+                        .get("data")
+                        .and_then(|data| data.get("error"))
+                        .cloned()
+                })
                 .unwrap_or_else(|| response.clone());
             return Err(SandboxError::InvalidRequest {
                 message: format!("pi prompt failed: {detail}"),
@@ -3927,7 +3933,12 @@ impl SessionManager {
             let detail = response
                 .get("error")
                 .cloned()
-                .or_else(|| response.get("data").and_then(|data| data.get("error")).cloned())
+                .or_else(|| {
+                    response
+                        .get("data")
+                        .and_then(|data| data.get("error"))
+                        .cloned()
+                })
                 .unwrap_or_else(|| response.clone());
             return Err(SandboxError::InvalidRequest {
                 message: format!("pi set_thinking_level failed for '{level}': {detail}"),
@@ -5529,7 +5540,8 @@ fn parse_pi_models_output(output: &str) -> AgentModelsResponse {
                     value.eq_ignore_ascii_case("yes") || value.eq_ignore_ascii_case("no")
                 })
             });
-        let supports_thinking = thinking_value.is_some_and(|value| value.eq_ignore_ascii_case("yes"));
+        let supports_thinking =
+            thinking_value.is_some_and(|value| value.eq_ignore_ascii_case("yes"));
         let (variants, default_variant) = if supports_thinking {
             (Some(pi_variants()), Some("medium".to_string()))
         } else {
@@ -6590,7 +6602,10 @@ anthropic   claude-sonnet-4-5-20250929    sonnet          no
             .iter()
             .find(|model| model.id == "anthropic/claude-sonnet-4-5-20250929")
             .expect("anthropic model");
-        assert_eq!(anthropic.variants.as_deref(), Some(&["off".to_string()][..]));
+        assert_eq!(
+            anthropic.variants.as_deref(),
+            Some(&["off".to_string()][..])
+        );
         assert_eq!(anthropic.default_variant.as_deref(), Some("off"));
 
         let openai = parsed
@@ -6621,10 +6636,7 @@ groq llama-3.3-70b-versatile alias no
             .map(|model| (model.id.as_str(), model.default_variant.as_deref()))
             .collect::<Vec<_>>();
 
-        assert_eq!(
-            models,
-            vec![("groq/llama-3.3-70b-versatile", Some("off"))]
-        );
+        assert_eq!(models, vec![("groq/llama-3.3-70b-versatile", Some("off"))]);
     }
 
     #[test]
@@ -6646,11 +6658,7 @@ groq llama-3.3-70b-versatile alias no
 
         assert_eq!(
             models,
-            vec![(
-                "openrouter/qwen/qwen3-32b",
-                pi_variants(),
-                Some("medium")
-            )]
+            vec![("openrouter/qwen/qwen3-32b", pi_variants(), Some("medium"))]
         );
     }
 
@@ -6987,7 +6995,10 @@ mod pi_runtime_tests {
 
         let prompt_line = stdin_rx.recv().await.expect("prompt request");
         let prompt_request: Value = serde_json::from_str(&prompt_line).expect("json request");
-        assert_eq!(prompt_request.get("type").and_then(Value::as_str), Some("prompt"));
+        assert_eq!(
+            prompt_request.get("type").and_then(Value::as_str),
+            Some("prompt")
+        );
         assert_eq!(
             prompt_request.get("message").and_then(Value::as_str),
             Some("Hello")
@@ -7027,7 +7038,10 @@ mod pi_runtime_tests {
 
         let prompt_line = stdin_rx.recv().await.expect("prompt request");
         let prompt_request: Value = serde_json::from_str(&prompt_line).expect("json request");
-        assert_eq!(prompt_request.get("type").and_then(Value::as_str), Some("prompt"));
+        assert_eq!(
+            prompt_request.get("type").and_then(Value::as_str),
+            Some("prompt")
+        );
         let prompt_id = prompt_request
             .get("id")
             .and_then(Value::as_i64)
