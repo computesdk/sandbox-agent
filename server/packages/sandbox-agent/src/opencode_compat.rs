@@ -29,6 +29,7 @@ use utoipa::{IntoParams, OpenApi, ToSchema};
 
 use crate::router::{
     is_question_tool_action, AgentModelInfo, AppState, CreateSessionRequest, PermissionReply,
+    SessionInfo,
 };
 use sandbox_agent_agent_management::agents::AgentId;
 use sandbox_agent_agent_management::credentials::{
@@ -151,6 +152,27 @@ impl OpenCodeSessionRecord {
         }
         Value::Object(map)
     }
+}
+
+/// Convert a v1 `SessionInfo` to the OpenCode session JSON format.
+fn session_info_to_opencode_value(info: &SessionInfo, default_project_id: &str) -> Value {
+    let title = info
+        .title
+        .clone()
+        .unwrap_or_else(|| format!("Session {}", info.session_id));
+    let directory = info.directory.clone().unwrap_or_default();
+    json!({
+        "id": info.session_id,
+        "slug": format!("session-{}", info.session_id),
+        "projectID": default_project_id,
+        "directory": directory,
+        "title": title,
+        "version": "0",
+        "time": {
+            "created": info.created_at,
+            "updated": info.updated_at,
+        }
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -479,6 +501,14 @@ async fn ensure_backing_session(
 ) -> Result<(), SandboxError> {
     let model = model.filter(|value| !value.trim().is_empty());
     let variant = variant.filter(|value| !value.trim().is_empty());
+    // Pull directory and title from the OpenCode session record if available.
+    let (directory, title) = {
+        let sessions = state.opencode.sessions.lock().await;
+        sessions
+            .get(session_id)
+            .map(|s| (Some(s.directory.clone()), Some(s.title.clone())))
+            .unwrap_or((None, None))
+    };
     let request = CreateSessionRequest {
         agent: agent.to_string(),
         agent_mode: None,
@@ -486,6 +516,8 @@ async fn ensure_backing_session(
         model: model.clone(),
         variant: variant.clone(),
         agent_version: None,
+        directory,
+        title,
     };
     match state
         .inner
@@ -3505,8 +3537,12 @@ async fn oc_session_create(
     tag = "opencode"
 )]
 async fn oc_session_list(State(state): State<Arc<OpenCodeAppState>>) -> impl IntoResponse {
-    let sessions = state.opencode.sessions.lock().await;
-    let values: Vec<Value> = sessions.values().map(|s| s.to_value()).collect();
+    let sessions = state.inner.session_manager().list_sessions().await;
+    let project_id = &state.opencode.default_project_id;
+    let values: Vec<Value> = sessions
+        .iter()
+        .map(|s| session_info_to_opencode_value(s, project_id))
+        .collect();
     (StatusCode::OK, Json(json!(values)))
 }
 
@@ -3523,9 +3559,18 @@ async fn oc_session_get(
     _headers: HeaderMap,
     _query: Query<DirectoryQuery>,
 ) -> impl IntoResponse {
-    let sessions = state.opencode.sessions.lock().await;
-    if let Some(session) = sessions.get(&session_id) {
-        return (StatusCode::OK, Json(session.to_value())).into_response();
+    let project_id = &state.opencode.default_project_id;
+    if let Some(info) = state
+        .inner
+        .session_manager()
+        .get_session_info(&session_id)
+        .await
+    {
+        return (
+            StatusCode::OK,
+            Json(session_info_to_opencode_value(&info, project_id)),
+        )
+            .into_response();
     }
     not_found("Session not found").into_response()
 }
@@ -3586,10 +3631,11 @@ async fn oc_session_delete(
     tag = "opencode"
 )]
 async fn oc_session_status(State(state): State<Arc<OpenCodeAppState>>) -> impl IntoResponse {
-    let sessions = state.opencode.sessions.lock().await;
+    let sessions = state.inner.session_manager().list_sessions().await;
     let mut status_map = serde_json::Map::new();
-    for id in sessions.keys() {
-        status_map.insert(id.clone(), json!({"type": "idle"}));
+    for s in &sessions {
+        let status = if s.ended { "idle" } else { "busy" };
+        status_map.insert(s.session_id.clone(), json!({"type": status}));
     }
     (StatusCode::OK, Json(Value::Object(status_map)))
 }
@@ -5048,20 +5094,9 @@ async fn oc_tui_open_help(
     tag = "opencode"
 )]
 async fn oc_tui_open_sessions(
-    State(state): State<Arc<OpenCodeAppState>>,
-    headers: HeaderMap,
+    State(_state): State<Arc<OpenCodeAppState>>,
+    _headers: HeaderMap,
 ) -> Response {
-    if let Some(response) = proxy_native_opencode(
-        &state,
-        reqwest::Method::POST,
-        "/tui/open-sessions",
-        &headers,
-        None,
-    )
-    .await
-    {
-        return response;
-    }
     bool_ok(true).into_response()
 }
 
@@ -5250,19 +5285,21 @@ async fn oc_tui_publish(
 )]
 async fn oc_tui_select_session(
     State(state): State<Arc<OpenCodeAppState>>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     body: Option<Json<Value>>,
 ) -> Response {
-    if let Some(response) = proxy_native_opencode(
-        &state,
-        reqwest::Method::POST,
-        "/tui/select-session",
-        &headers,
-        body.map(|json| json.0),
-    )
-    .await
-    {
-        return response;
+    if let Some(Json(body)) = body {
+        // Emit a tui.session.select event so the TUI navigates to the session.
+        let session_id = body
+            .get("sessionID")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        state.opencode.emit_event(json!({
+            "type": "tui.session.select",
+            "properties": {
+                "sessionID": session_id
+            }
+        }));
     }
     bool_ok(true).into_response()
 }

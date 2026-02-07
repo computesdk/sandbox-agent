@@ -703,6 +703,8 @@ fn run_sessions(command: &SessionsCommand, cli: &CliConfig) -> Result<(), CliErr
                 model: args.model.clone(),
                 variant: args.variant.clone(),
                 agent_version: args.agent_version.clone(),
+                directory: None,
+                title: None,
             };
             let path = format!("{API_PREFIX}/sessions/{}", args.session_id);
             let response = ctx.post(&path, &body)?;

@@ -429,6 +429,10 @@ struct SessionState {
     claude_message_counter: u64,
     pending_assistant_native_ids: VecDeque<String>,
     pending_assistant_counter: u64,
+    created_at: i64,
+    updated_at: i64,
+    directory: Option<String>,
+    title: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -455,6 +459,10 @@ impl SessionState {
             request.permission_mode.as_deref(),
         )?;
         let (broadcaster, _rx) = broadcast::channel(256);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
 
         Ok(Self {
             session_id,
@@ -488,6 +496,10 @@ impl SessionState {
             claude_message_counter: 0,
             pending_assistant_native_ids: VecDeque::new(),
             pending_assistant_counter: 0,
+            created_at: now,
+            updated_at: now,
+            directory: request.directory.clone(),
+            title: request.title.clone(),
         })
     }
 
@@ -528,6 +540,12 @@ impl SessionState {
                     events.push(event);
                 }
             }
+        }
+        if !events.is_empty() {
+            self.updated_at = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(self.updated_at);
         }
         events
     }
@@ -2117,7 +2135,7 @@ impl SessionManager {
         Ok(EventsResponse { events, has_more })
     }
 
-    async fn list_sessions(&self) -> Vec<SessionInfo> {
+    pub(crate) async fn list_sessions(&self) -> Vec<SessionInfo> {
         let sessions = self.sessions.lock().await;
         sessions
             .iter()
@@ -2132,8 +2150,31 @@ impl SessionManager {
                 native_session_id: state.native_session_id.clone(),
                 ended: state.ended,
                 event_count: state.events.len() as u64,
+                created_at: state.created_at,
+                updated_at: state.updated_at,
+                directory: state.directory.clone(),
+                title: state.title.clone(),
             })
             .collect()
+    }
+
+    pub(crate) async fn get_session_info(&self, session_id: &str) -> Option<SessionInfo> {
+        let sessions = self.sessions.lock().await;
+        Self::session_ref(&sessions, session_id).map(|state| SessionInfo {
+            session_id: state.session_id.clone(),
+            agent: state.agent.as_str().to_string(),
+            agent_mode: state.agent_mode.clone(),
+            permission_mode: state.permission_mode.clone(),
+            model: state.model.clone(),
+            variant: state.variant.clone(),
+            native_session_id: state.native_session_id.clone(),
+            ended: state.ended,
+            event_count: state.events.len() as u64,
+            created_at: state.created_at,
+            updated_at: state.updated_at,
+            directory: state.directory.clone(),
+            title: state.title.clone(),
+        })
     }
 
     pub(crate) async fn subscribe(
@@ -4373,6 +4414,10 @@ pub struct SessionInfo {
     pub native_session_id: Option<String>,
     pub ended: bool,
     pub event_count: u64,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub directory: Option<String>,
+    pub title: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema, JsonSchema)]
@@ -4400,6 +4445,10 @@ pub struct CreateSessionRequest {
     pub variant: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema, JsonSchema)]
@@ -6363,6 +6412,8 @@ pub mod test_utils {
                 model: None,
                 variant: None,
                 agent_version: None,
+                directory: None,
+                title: None,
             };
             let mut session =
                 SessionState::new(session_id.to_string(), agent, &request).expect("session");

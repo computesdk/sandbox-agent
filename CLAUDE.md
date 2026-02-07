@@ -65,9 +65,35 @@ Universal schema guidance:
 - `sandbox-agent api sessions reject-question` ↔ `POST /v1/sessions/{sessionId}/questions/{questionId}/reject`
 - `sandbox-agent api sessions reply-permission` ↔ `POST /v1/sessions/{sessionId}/permissions/{permissionId}/reply`
 
-## OpenCode CLI (Experimental)
+## OpenCode Compatibility Layer
 
 `sandbox-agent opencode` starts a sandbox-agent server and attaches an OpenCode session (uses `/opencode`).
+
+### Session ownership
+
+Sessions are stored **only** in sandbox-agent's v1 `SessionManager` — they are never sent to or stored in the native OpenCode server. The OpenCode TUI reads sessions via `GET /session` which the compat layer serves from the v1 store. The native OpenCode process has no knowledge of sessions.
+
+### Proxy elimination strategy
+
+The `/opencode` compat layer (`opencode_compat.rs`) historically proxied many endpoints to the native OpenCode server via `proxy_native_opencode()`. The goal is to **eliminate proxying** by implementing each endpoint natively using the v1 `SessionManager` as the single source of truth.
+
+**Already de-proxied** (use v1 SessionManager directly):
+- `GET /session` — `oc_session_list` reads from `SessionManager::list_sessions()`
+- `GET /session/{id}` — `oc_session_get` reads from `SessionManager::get_session_info()`
+- `GET /session/status` — `oc_session_status` derives busy/idle from v1 session `ended` flag
+- `POST /tui/open-sessions` — returns `true` directly (TUI fetches sessions from `GET /session`)
+- `POST /tui/select-session` — emits `tui.session.select` event via the OpenCode event broadcaster
+
+**Still proxied** (none of these reference session IDs or the session list — all are session-agnostic):
+- `GET /command` — command list
+- `GET /config`, `PATCH /config` — project config read/write
+- `GET /global/config`, `PATCH /global/config` — global config read/write
+- `GET /tui/control/next`, `POST /tui/control/response` — TUI control loop
+- `POST /tui/append-prompt`, `/tui/submit-prompt`, `/tui/clear-prompt` — prompt management
+- `POST /tui/open-help`, `/tui/open-themes`, `/tui/open-models` — TUI navigation
+- `POST /tui/execute-command`, `/tui/show-toast`, `/tui/publish` — TUI actions
+
+When converting a proxied endpoint: add needed fields to `SessionState`/`SessionInfo` in `router.rs`, implement the logic natively in `opencode_compat.rs`, and use `session_info_to_opencode_value()` to format responses.
 
 ## Post-Release Testing
 
