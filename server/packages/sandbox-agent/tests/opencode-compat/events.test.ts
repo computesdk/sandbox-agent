@@ -17,6 +17,25 @@ describe("OpenCode-compatible Event Streaming", () => {
   let handle: SandboxAgentHandle;
   let client: OpencodeClient;
 
+  function uniqueSessionId(prefix: string): string {
+    return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  async function initSessionViaHttp(
+    sessionId: string,
+    body: Record<string, unknown>
+  ): Promise<void> {
+    const response = await fetch(`${handle.baseUrl}/opencode/session/${sessionId}/init`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${handle.token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+    expect(response.ok).toBe(true);
+  }
+
   beforeAll(async () => {
     await buildSandboxAgent();
   });
@@ -143,6 +162,129 @@ describe("OpenCode-compatible Event Streaming", () => {
       const response = await client.session.status();
 
       expect(response.data).toBeDefined();
+    });
+
+    it("should be idle before first prompt and return to idle after prompt completion", async () => {
+      const sessionId = uniqueSessionId("status-idle");
+      await initSessionViaHttp(sessionId, { providerID: "mock", modelID: "mock" });
+
+      const initial = await client.session.status();
+      expect(initial.data?.[sessionId]?.type).toBe("idle");
+
+      const eventStream = await client.event.subscribe();
+      const statuses: string[] = [];
+
+      const collectIdle = new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(
+          () => reject(new Error("Timed out waiting for session.idle")),
+          15_000
+        );
+        (async () => {
+          try {
+            for await (const event of (eventStream as any).stream) {
+              if (event?.properties?.sessionID !== sessionId) continue;
+              if (event.type === "session.status") {
+                const statusType = event?.properties?.status?.type;
+                if (typeof statusType === "string") statuses.push(statusType);
+              }
+              if (event.type === "session.idle") {
+                clearTimeout(timeout);
+                resolve();
+                break;
+              }
+            }
+          } catch {
+            // Stream ended
+          }
+        })();
+      });
+
+      await client.session.prompt({
+        path: { id: sessionId },
+        body: {
+          model: { providerID: "mock", modelID: "mock" },
+          parts: [{ type: "text", text: "Say hello" }],
+        },
+      });
+
+      await collectIdle;
+
+      expect(statuses).toContain("busy");
+      const finalStatus = await client.session.status();
+      expect(finalStatus.data?.[sessionId]?.type).toBe("idle");
+    });
+
+    it("should emit session.error and return idle for failed turns", async () => {
+      const sessionId = uniqueSessionId("status-error");
+      await initSessionViaHttp(sessionId, { providerID: "mock", modelID: "mock" });
+
+      const eventStream = await client.event.subscribe();
+      const errors: any[] = [];
+      const idles: any[] = [];
+
+      const collectErrorAndIdle = new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(
+          () => reject(new Error("Timed out waiting for session.error + session.idle")),
+          15_000
+        );
+        (async () => {
+          try {
+            for await (const event of (eventStream as any).stream) {
+              if (event?.properties?.sessionID !== sessionId) continue;
+              if (event.type === "session.error") {
+                errors.push(event);
+              }
+              if (event.type === "session.idle") {
+                idles.push(event);
+              }
+              if (errors.length > 0 && idles.length > 0) {
+                clearTimeout(timeout);
+                resolve();
+                break;
+              }
+            }
+          } catch {
+            // Stream ended
+          }
+        })();
+      });
+
+      await client.session.prompt({
+        path: { id: sessionId },
+        body: {
+          model: { providerID: "mock", modelID: "mock" },
+          parts: [{ type: "text", text: "error" }],
+        },
+      });
+
+      await collectErrorAndIdle;
+
+      expect(errors.length).toBeGreaterThan(0);
+      const finalStatus = await client.session.status();
+      expect(finalStatus.data?.[sessionId]?.type).toBe("idle");
+    });
+
+    it("should report idle for newly initialized sessions across connected providers", async () => {
+      const providersResponse = await fetch(`${handle.baseUrl}/opencode/provider`, {
+        headers: { Authorization: `Bearer ${handle.token}` },
+      });
+      expect(providersResponse.ok).toBe(true);
+      const providersData = await providersResponse.json();
+
+      const connected: string[] = providersData.connected ?? [];
+      const defaults: Record<string, string> = providersData.default ?? {};
+
+      for (const providerID of connected) {
+        const modelID = defaults[providerID];
+        if (!modelID) continue;
+
+        const sessionId = uniqueSessionId(`status-${providerID.replace(/[^a-zA-Z0-9_-]/g, "_")}`);
+
+        await initSessionViaHttp(sessionId, { providerID, modelID });
+
+        const status = await client.session.status();
+        expect(status.data?.[sessionId]?.type).toBe("idle");
+      }
     });
   });
 

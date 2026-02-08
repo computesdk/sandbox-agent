@@ -762,6 +762,30 @@ export default function App() {
           });
           break;
         }
+        case "turn.started": {
+          entries.push({
+            id: event.event_id,
+            kind: "meta",
+            time: event.time,
+            meta: {
+              title: "Turn started",
+              severity: "info"
+            }
+          });
+          break;
+        }
+        case "turn.ended": {
+          entries.push({
+            id: event.event_id,
+            kind: "meta",
+            time: event.time,
+            meta: {
+              title: "Turn ended",
+              severity: "info"
+            }
+          });
+          break;
+        }
         default:
           break;
       }

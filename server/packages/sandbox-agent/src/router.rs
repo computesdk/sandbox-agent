@@ -22,11 +22,12 @@ use reqwest::Client;
 use sandbox_agent_error::{AgentError, ErrorType, ProblemDetails, SandboxError};
 use sandbox_agent_universal_agent_schema::{
     codex as codex_schema, convert_amp, convert_claude, convert_codex, convert_opencode,
-    turn_completed_event, AgentUnparsedData, ContentPart, ErrorData, EventConversion, EventSource,
-    FileAction, ItemDeltaData, ItemEventData, ItemKind, ItemRole, ItemStatus, PermissionEventData,
-    PermissionStatus, QuestionEventData, QuestionStatus, ReasoningVisibility, SessionEndReason,
-    SessionEndedData, SessionStartedData, StderrOutput, TerminatedBy, UniversalEvent,
-    UniversalEventData, UniversalEventType, UniversalItem,
+    turn_ended_event, turn_started_event, AgentUnparsedData, ContentPart, ErrorData,
+    EventConversion, EventSource, FileAction, ItemDeltaData, ItemEventData, ItemKind, ItemRole,
+    ItemStatus, PermissionEventData, PermissionStatus, QuestionEventData, QuestionStatus,
+    ReasoningVisibility, SessionEndReason, SessionEndedData, SessionStartedData, StderrOutput,
+    TerminatedBy, TurnEventData, TurnPhase, UniversalEvent, UniversalEventData, UniversalEventType,
+    UniversalItem,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -336,6 +337,8 @@ pub async fn shutdown_servers(state: &Arc<AppState>) {
             EventSource,
             SessionStartedData,
             SessionEndedData,
+            TurnEventData,
+            TurnPhase,
             SessionEndReason,
             TerminatedBy,
             StderrOutput,
@@ -648,6 +651,7 @@ impl SessionState {
                     }
                     if conversion.event_type == UniversalEventType::ItemCompleted
                         && data.item.kind == ItemKind::Message
+                        && !matches!(data.item.role, Some(ItemRole::User))
                         && !self.item_delta_seen.contains(&data.item.item_id)
                     {
                         if let Some(delta) = text_delta_from_parts(&data.item.content) {
@@ -732,6 +736,15 @@ impl SessionState {
         ) {
             if let UniversalEventData::Permission(ref data) = event.data {
                 if is_question_tool_action(&data.action) {
+                    return None;
+                }
+            }
+        }
+        if event.event_type == UniversalEventType::PermissionRequested
+            && self.permission_mode == "acceptEdits"
+        {
+            if let UniversalEventData::Permission(ref data) = event.data {
+                if is_file_change_action(&data.action) {
                     return None;
                 }
             }
@@ -1853,6 +1866,49 @@ impl SessionManager {
         Ok(())
     }
 
+    pub(crate) async fn set_session_title(
+        &self,
+        session_id: &str,
+        title: String,
+    ) -> Result<(), SandboxError> {
+        let mut sessions = self.sessions.lock().await;
+        let Some(session) = SessionManager::session_mut(&mut sessions, session_id) else {
+            return Err(SandboxError::SessionNotFound {
+                session_id: session_id.to_string(),
+            });
+        };
+        session.title = Some(title);
+        session.updated_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(session.updated_at);
+        Ok(())
+    }
+
+    pub(crate) async fn delete_session(&self, session_id: &str) -> Result<(), SandboxError> {
+        let (agent, native_session_id) = {
+            let mut sessions = self.sessions.lock().await;
+            let Some(index) = sessions
+                .iter()
+                .position(|session| session.session_id == session_id)
+            else {
+                return Err(SandboxError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                });
+            };
+            let session = sessions.remove(index);
+            (session.agent, session.native_session_id)
+        };
+
+        if agent == AgentId::Opencode || agent == AgentId::Codex {
+            self.server_manager
+                .unregister_session(agent, session_id, native_session_id.as_deref())
+                .await;
+        }
+
+        Ok(())
+    }
+
     async fn agent_modes(&self, agent: AgentId) -> Result<Vec<AgentModeInfo>, SandboxError> {
         if agent != AgentId::Opencode {
             return Ok(agent_modes_for(agent));
@@ -1946,6 +2002,14 @@ impl SessionManager {
     ) -> Result<(), SandboxError> {
         // Use allow_ended=true and do explicit check to allow resumable agents
         let session_snapshot = self.session_snapshot_for_message(&session_id).await?;
+        if !agent_emits_turn_started(session_snapshot.agent) {
+            let _ = self
+                .record_conversions(
+                    &session_id,
+                    vec![turn_started_event(None, None).synthetic()],
+                )
+                .await;
+        }
         if session_snapshot.agent == AgentId::Mock {
             self.send_mock_message(session_id, message).await?;
             return Ok(());
@@ -2568,46 +2632,7 @@ impl SessionManager {
                     .ok_or_else(|| SandboxError::InvalidRequest {
                         message: "missing codex permission metadata".to_string(),
                     })?;
-            let metadata = pending.metadata.clone().unwrap_or(Value::Null);
-            let request_id = codex_request_id_from_metadata(&metadata)
-                .or_else(|| codex_request_id_from_string(permission_id))
-                .ok_or_else(|| SandboxError::InvalidRequest {
-                    message: "invalid codex permission request id".to_string(),
-                })?;
-            let request_kind = metadata
-                .get("codexRequestKind")
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            let response_value = match request_kind {
-                "commandExecution" => {
-                    let decision = codex_command_decision_for_reply(reply.clone());
-                    let response =
-                        codex_schema::CommandExecutionRequestApprovalResponse { decision };
-                    serde_json::to_value(response).map_err(|err| SandboxError::InvalidRequest {
-                        message: err.to_string(),
-                    })?
-                }
-                "fileChange" => {
-                    let decision = codex_file_change_decision_for_reply(reply.clone());
-                    let response = codex_schema::FileChangeRequestApprovalResponse { decision };
-                    serde_json::to_value(response).map_err(|err| SandboxError::InvalidRequest {
-                        message: err.to_string(),
-                    })?
-                }
-                _ => {
-                    return Err(SandboxError::InvalidRequest {
-                        message: "unsupported codex permission request".to_string(),
-                    });
-                }
-            };
-            let response = codex_schema::JsonrpcResponse {
-                id: request_id,
-                result: response_value,
-            };
-            let line =
-                serde_json::to_string(&response).map_err(|err| SandboxError::InvalidRequest {
-                    message: err.to_string(),
-                })?;
+            let line = codex_permission_response_line(permission_id, &pending, reply.clone())?;
             server
                 .stdin_sender
                 .send(line)
@@ -2977,8 +3002,23 @@ impl SessionManager {
                     session_id: session_id.to_string(),
                 }
             })?;
+            let mut accept_edits_permission_ids = Vec::new();
+            if session.agent == AgentId::Codex && session.permission_mode == "acceptEdits" {
+                for conversion in &conversions {
+                    if conversion.event_type != UniversalEventType::PermissionRequested {
+                        continue;
+                    }
+                    let UniversalEventData::Permission(data) = &conversion.data else {
+                        continue;
+                    };
+                    if is_file_change_action(&data.action) {
+                        accept_edits_permission_ids.push(data.permission_id.clone());
+                    }
+                }
+            }
             let events = session.record_conversions(conversions);
             let mut auto_approvals = Vec::new();
+            let mut seen = HashSet::new();
             for event in &events {
                 if event.event_type != UniversalEventType::PermissionRequested {
                     continue;
@@ -2987,10 +3027,7 @@ impl SessionManager {
                     continue;
                 };
                 let cached = session.should_auto_approve_permission(&data.action, &data.metadata);
-                if session.agent == AgentId::Codex
-                    || is_question_tool_action(&data.action)
-                    || !cached
-                {
+                if is_question_tool_action(&data.action) || !cached {
                     continue;
                 }
                 if let Some(pending) = session.take_permission(&data.permission_id) {
@@ -3000,14 +3037,49 @@ impl SessionManager {
                         session.claude_sender(),
                         data.permission_id.clone(),
                         pending,
+                        PermissionReply::Always,
                     ));
+                    seen.insert(data.permission_id.clone());
+                }
+            }
+            for permission_id in accept_edits_permission_ids {
+                if seen.contains(&permission_id) {
+                    continue;
+                }
+                if let Some(pending) = session.take_permission(&permission_id) {
+                    auto_approvals.push((
+                        session.agent,
+                        session.native_session_id.clone(),
+                        session.claude_sender(),
+                        permission_id.clone(),
+                        pending,
+                        PermissionReply::Always,
+                    ));
+                    seen.insert(permission_id);
                 }
             }
             (events, auto_approvals)
         };
 
-        for (agent, native_session_id, claude_sender, permission_id, pending) in auto_approvals {
+        for (agent, native_session_id, claude_sender, permission_id, pending, reply) in
+            auto_approvals
+        {
+            let reply_for_status = reply.clone();
             let reply_result = match agent {
+                AgentId::Codex => {
+                    let (server, _) = self
+                        .server_manager
+                        .ensure_stdio_server(AgentId::Codex)
+                        .await?;
+                    let line =
+                        codex_permission_response_line(&permission_id, &pending, reply.clone())?;
+                    server
+                        .stdin_sender
+                        .send(line)
+                        .map_err(|_| SandboxError::InvalidRequest {
+                            message: "codex server not active".to_string(),
+                        })
+                }
                 AgentId::Opencode => {
                     let agent_session_id =
                         native_session_id
@@ -3020,7 +3092,7 @@ impl SessionManager {
                             self.opencode_permission_reply(
                                 &agent_session_id,
                                 &permission_id,
-                                PermissionReply::Always,
+                                reply.clone(),
                             )
                             .await
                         }
@@ -3039,12 +3111,27 @@ impl SessionManager {
                                 .cloned()
                                 .unwrap_or(Value::Null);
                             let mut response_map = serde_json::Map::new();
-                            if !updated_input.is_null() {
-                                response_map.insert("updatedInput".to_string(), updated_input);
+                            match reply.clone() {
+                                PermissionReply::Reject => {
+                                    response_map.insert(
+                                        "message".to_string(),
+                                        Value::String("Permission denied.".to_string()),
+                                    );
+                                }
+                                PermissionReply::Once | PermissionReply::Always => {
+                                    if !updated_input.is_null() {
+                                        response_map
+                                            .insert("updatedInput".to_string(), updated_input);
+                                    }
+                                }
                             }
+                            let behavior = match reply.clone() {
+                                PermissionReply::Reject => "deny",
+                                PermissionReply::Once | PermissionReply::Always => "allow",
+                            };
                             let line = claude_control_response_line(
                                 &permission_id,
-                                "allow",
+                                behavior,
                                 Value::Object(response_map),
                             );
                             sender.send(line).map_err(|_| SandboxError::InvalidRequest {
@@ -3078,7 +3165,11 @@ impl SessionManager {
                 UniversalEventData::Permission(PermissionEventData {
                     permission_id: permission_id.clone(),
                     action: pending.action,
-                    status: PermissionStatus::AcceptForSession,
+                    status: match reply_for_status {
+                        PermissionReply::Reject => PermissionStatus::Reject,
+                        PermissionReply::Once => PermissionStatus::Accept,
+                        PermissionReply::Always => PermissionStatus::AcceptForSession,
+                    },
                     metadata: pending.metadata,
                 }),
             )
@@ -5007,6 +5098,10 @@ fn agent_supports_item_started(agent: AgentId) -> bool {
     agent_capabilities_for(agent).item_started
 }
 
+fn agent_emits_turn_started(agent: AgentId) -> bool {
+    matches!(agent, AgentId::Codex | AgentId::Opencode)
+}
+
 fn agent_capabilities_for(agent: AgentId) -> AgentCapabilities {
     match agent {
         // Claude CLI supports tool calls/results and permission prompts via the SDK control protocol,
@@ -5375,7 +5470,7 @@ fn normalize_permission_mode(
     agent: AgentId,
     permission_mode: Option<&str>,
 ) -> Result<String, SandboxError> {
-    let mode = match permission_mode.unwrap_or("default") {
+    let mut mode = match permission_mode.unwrap_or("default") {
         "default" | "plan" | "bypass" | "acceptEdits" => permission_mode.unwrap_or("default"),
         value => {
             return Err(SandboxError::InvalidRequest {
@@ -5384,6 +5479,10 @@ fn normalize_permission_mode(
             .into())
         }
     };
+    if agent != AgentId::Claude && mode == "acceptEdits" && agent != AgentId::Codex {
+        // acceptEdits is Claude-only unless explicitly handled; treat it as a no-op for other agents.
+        mode = "default";
+    }
     if agent == AgentId::Claude {
         // Claude refuses --dangerously-skip-permissions when running as root,
         // which is common in container environments (Docker, Daytona, E2B).
@@ -5402,7 +5501,7 @@ fn normalize_permission_mode(
     }
     let supported = match agent {
         AgentId::Claude => false,
-        AgentId::Codex => matches!(mode, "default" | "plan" | "bypass"),
+        AgentId::Codex => matches!(mode, "default" | "plan" | "bypass" | "acceptEdits"),
         AgentId::Amp => matches!(mode, "default" | "bypass"),
         AgentId::Opencode => matches!(mode, "default"),
         AgentId::Mock => matches!(mode, "default" | "plan" | "bypass"),
@@ -5482,14 +5581,30 @@ fn build_spawn_options(
         }
     });
     if let Some(anthropic) = credentials.anthropic {
-        options
-            .env
-            .entry("ANTHROPIC_API_KEY".to_string())
-            .or_insert(anthropic.api_key.clone());
-        options
-            .env
-            .entry("CLAUDE_API_KEY".to_string())
-            .or_insert(anthropic.api_key);
+        let should_inject_claude_env = !(session.agent == AgentId::Claude
+            && anthropic.source == "claude-code"
+            && anthropic.provider == "anthropic");
+        if should_inject_claude_env {
+            if session.agent == AgentId::Claude && anthropic.auth_type == AuthType::Oauth {
+                options
+                    .env
+                    .entry("CLAUDE_CODE_OAUTH_TOKEN".to_string())
+                    .or_insert(anthropic.api_key.clone());
+                options
+                    .env
+                    .entry("ANTHROPIC_AUTH_TOKEN".to_string())
+                    .or_insert(anthropic.api_key);
+            } else {
+                options
+                    .env
+                    .entry("ANTHROPIC_API_KEY".to_string())
+                    .or_insert(anthropic.api_key.clone());
+                options
+                    .env
+                    .entry("CLAUDE_API_KEY".to_string())
+                    .or_insert(anthropic.api_key);
+            }
+        }
     }
     if let Some(openai) = credentials.openai {
         options
@@ -5502,6 +5617,102 @@ fn build_spawn_options(
             .or_insert(openai.api_key);
     }
     options
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_snapshot(agent: AgentId) -> SessionSnapshot {
+        SessionSnapshot {
+            session_id: "test-session".to_string(),
+            agent,
+            agent_mode: "build".to_string(),
+            permission_mode: "default".to_string(),
+            model: None,
+            variant: None,
+            native_session_id: None,
+        }
+    }
+
+    fn claude_code_api_key_credentials() -> ExtractedCredentials {
+        ExtractedCredentials {
+            anthropic: Some(ProviderCredentials {
+                api_key: "sk-ant-test".to_string(),
+                source: "claude-code".to_string(),
+                auth_type: AuthType::ApiKey,
+                provider: "anthropic".to_string(),
+            }),
+            openai: None,
+            other: HashMap::new(),
+        }
+    }
+
+    fn environment_oauth_credentials() -> ExtractedCredentials {
+        ExtractedCredentials {
+            anthropic: Some(ProviderCredentials {
+                api_key: "oauth-token".to_string(),
+                source: "environment".to_string(),
+                auth_type: AuthType::Oauth,
+                provider: "anthropic".to_string(),
+            }),
+            openai: None,
+            other: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn build_spawn_options_skips_claude_env_for_claude_code_source() {
+        let options = build_spawn_options(
+            &test_snapshot(AgentId::Claude),
+            "hello".to_string(),
+            claude_code_api_key_credentials(),
+        );
+
+        assert!(!options.env.contains_key("ANTHROPIC_API_KEY"));
+        assert!(!options.env.contains_key("CLAUDE_API_KEY"));
+    }
+
+    #[test]
+    fn build_spawn_options_keeps_anthropic_env_for_non_claude_agent() {
+        let options = build_spawn_options(
+            &test_snapshot(AgentId::Amp),
+            "hello".to_string(),
+            claude_code_api_key_credentials(),
+        );
+
+        assert_eq!(
+            options.env.get("ANTHROPIC_API_KEY").map(String::as_str),
+            Some("sk-ant-test")
+        );
+        assert_eq!(
+            options.env.get("CLAUDE_API_KEY").map(String::as_str),
+            Some("sk-ant-test")
+        );
+    }
+
+    #[test]
+    fn build_spawn_options_uses_oauth_env_for_claude_oauth_credentials() {
+        let options = build_spawn_options(
+            &test_snapshot(AgentId::Claude),
+            "hello".to_string(),
+            environment_oauth_credentials(),
+        );
+
+        assert_eq!(
+            options
+                .env
+                .get("CLAUDE_CODE_OAUTH_TOKEN")
+                .map(String::as_str),
+            Some("oauth-token")
+        );
+        assert_eq!(
+            options.env.get("ANTHROPIC_AUTH_TOKEN").map(String::as_str),
+            Some("oauth-token")
+        );
+        assert!(!options.env.contains_key("ANTHROPIC_API_KEY"));
+        assert!(!options.env.contains_key("CLAUDE_API_KEY"));
+    }
 }
 
 fn claude_input_session_id(session: &SessionSnapshot) -> String {
@@ -5592,6 +5803,11 @@ pub(crate) fn is_question_tool_action(action: &str) -> bool {
             | "exitPlanMode"
             | "exit-plan-mode"
     )
+}
+
+fn is_file_change_action(action: &str) -> bool {
+    matches!(action, "fileChange" | "file_change" | "file-change")
+        || action.eq_ignore_ascii_case("filechange")
 }
 
 fn permission_cache_keys(action: &str, metadata: &Option<Value>) -> Vec<String> {
@@ -6187,6 +6403,51 @@ fn codex_rpc_error_to_universal(error: &codex_schema::JsonrpcError) -> EventConv
     EventConversion::new(UniversalEventType::Error, UniversalEventData::Error(data))
 }
 
+fn codex_permission_response_line(
+    permission_id: &str,
+    pending: &PendingPermission,
+    reply: PermissionReply,
+) -> Result<String, SandboxError> {
+    let metadata = pending.metadata.clone().unwrap_or(Value::Null);
+    let request_id = codex_request_id_from_metadata(&metadata)
+        .or_else(|| codex_request_id_from_string(permission_id))
+        .ok_or_else(|| SandboxError::InvalidRequest {
+            message: "invalid codex permission request id".to_string(),
+        })?;
+    let request_kind = metadata
+        .get("codexRequestKind")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let response_value = match request_kind {
+        "commandExecution" => {
+            let decision = codex_command_decision_for_reply(reply);
+            let response = codex_schema::CommandExecutionRequestApprovalResponse { decision };
+            serde_json::to_value(response).map_err(|err| SandboxError::InvalidRequest {
+                message: err.to_string(),
+            })?
+        }
+        "fileChange" => {
+            let decision = codex_file_change_decision_for_reply(reply);
+            let response = codex_schema::FileChangeRequestApprovalResponse { decision };
+            serde_json::to_value(response).map_err(|err| SandboxError::InvalidRequest {
+                message: err.to_string(),
+            })?
+        }
+        _ => {
+            return Err(SandboxError::InvalidRequest {
+                message: "unsupported codex permission request".to_string(),
+            });
+        }
+    };
+    let response = codex_schema::JsonrpcResponse {
+        id: request_id,
+        result: response_value,
+    };
+    serde_json::to_string(&response).map_err(|err| SandboxError::InvalidRequest {
+        message: err.to_string(),
+    })
+}
+
 fn codex_request_id_from_metadata(metadata: &Value) -> Option<codex_schema::RequestId> {
     let metadata = metadata.as_object()?;
     let value = metadata.get("codexRequestId")?;
@@ -6704,13 +6965,13 @@ fn mock_command_conversions(prefix: &str, input: &str) -> Vec<EventConversion> {
         return vec![];
     }
     let mut events = mock_command_events(prefix, trimmed);
-    if should_append_turn_completed(&events) {
-        events.push(turn_completed_event());
+    if should_append_turn_ended(&events) {
+        events.push(turn_ended_event(None, None).synthetic());
     }
     events
 }
 
-fn should_append_turn_completed(events: &[EventConversion]) -> bool {
+fn should_append_turn_ended(events: &[EventConversion]) -> bool {
     let Some(last) = events.last() else {
         return false;
     };
@@ -7559,32 +7820,14 @@ fn stream_turn_events(
 
 fn is_turn_terminal(event: &UniversalEvent, _agent: AgentId) -> bool {
     match event.event_type {
-        UniversalEventType::SessionEnded
+        UniversalEventType::TurnEnded
+        | UniversalEventType::SessionEnded
         | UniversalEventType::Error
         | UniversalEventType::AgentUnparsed
         | UniversalEventType::PermissionRequested
         | UniversalEventType::QuestionRequested => true,
-        UniversalEventType::ItemCompleted => {
-            let UniversalEventData::Item(ItemEventData { item }) = &event.data else {
-                return false;
-            };
-            matches!(status_label(item), Some("turn.completed" | "session.idle"))
-        }
         _ => false,
     }
-}
-
-fn status_label(item: &UniversalItem) -> Option<&str> {
-    if item.kind != ItemKind::Status {
-        return None;
-    }
-    item.content.iter().find_map(|part| {
-        if let ContentPart::Status { label, .. } = part {
-            Some(label.as_str())
-        } else {
-            None
-        }
-    })
 }
 
 fn to_sse_event(event: UniversalEvent) -> Event {

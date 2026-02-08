@@ -605,8 +605,22 @@ fn run_opencode(cli: &CliConfig, args: &OpencodeArgs) -> Result<(), CliError> {
     let token = cli.token.clone();
 
     let base_url = format!("http://{}:{}", args.host, args.port);
+    let has_proxy_env = std::env::var_os("HTTP_PROXY").is_some()
+        || std::env::var_os("http_proxy").is_some()
+        || std::env::var_os("HTTPS_PROXY").is_some()
+        || std::env::var_os("https_proxy").is_some();
+    let has_no_proxy_env =
+        std::env::var_os("NO_PROXY").is_some() || std::env::var_os("no_proxy").is_some();
+    write_stderr_line(&format!(
+        "gigacode startup: ensuring daemon at {base_url} (token: {}, proxy env: {}, no_proxy env: {})",
+        if token.is_some() { "set" } else { "unset" },
+        if has_proxy_env { "set" } else { "unset" },
+        if has_no_proxy_env { "set" } else { "unset" }
+    ))?;
     crate::daemon::ensure_running(cli, &args.host, args.port, token.as_deref())?;
+    write_stderr_line("gigacode startup: daemon is healthy")?;
 
+    write_stderr_line("gigacode startup: creating OpenCode session via /opencode/session")?;
     let session_id = create_opencode_session(
         &base_url,
         token.as_deref(),
@@ -616,7 +630,12 @@ fn run_opencode(cli: &CliConfig, args: &OpencodeArgs) -> Result<(), CliError> {
     write_stdout_line(&format!("OpenCode session: {session_id}"))?;
 
     let attach_url = format!("{base_url}/opencode");
+    write_stderr_line("gigacode startup: resolving OpenCode binary (installing if needed)")?;
     let opencode_bin = resolve_opencode_bin()?;
+    write_stderr_line(&format!(
+        "gigacode startup: launching OpenCode attach using {}",
+        opencode_bin.display()
+    ))?;
     let mut opencode_cmd = ProcessCommand::new(opencode_bin);
     opencode_cmd
         .arg("attach")

@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use crate::amp as schema;
 use crate::{
-    turn_completed_event, ContentPart, ErrorData, EventConversion, ItemDeltaData, ItemEventData,
+    turn_ended_event, ContentPart, ErrorData, EventConversion, ItemDeltaData, ItemEventData,
     ItemKind, ItemRole, ItemStatus, SessionEndReason, SessionEndedData, TerminatedBy,
     UniversalEventData, UniversalEventType, UniversalItem,
 };
@@ -99,7 +99,7 @@ pub fn event_to_universal(
             ));
         }
         schema::StreamJsonMessageType::Done => {
-            events.push(turn_completed_event());
+            events.push(turn_ended_event(None, None).synthetic());
             events.push(
                 EventConversion::new(
                     UniversalEventType::SessionEnded,

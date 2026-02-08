@@ -256,6 +256,7 @@ impl OpenCodeQuestionRecord {
 
 #[derive(Default, Clone)]
 struct OpenCodeSessionRuntime {
+    turn_in_progress: bool,
     last_user_message_id: Option<String>,
     active_assistant_message_id: Option<String>,
     last_agent: Option<String>,
@@ -277,6 +278,10 @@ struct OpenCodeSessionRuntime {
     open_tool_calls: HashSet<String>,
     /// Assistant messages that have streamed text deltas.
     messages_with_text_deltas: HashSet<String>,
+    /// Item IDs (native and normalized) known to be user messages.
+    user_item_ids: HashSet<String>,
+    /// Item IDs (native and normalized) that should not emit text deltas.
+    non_text_item_ids: HashSet<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -512,29 +517,83 @@ async fn ensure_backing_session(
     let request = CreateSessionRequest {
         agent: agent.to_string(),
         agent_mode: None,
-        permission_mode,
+        permission_mode: permission_mode.clone(),
         model: model.clone(),
         variant: variant.clone(),
         agent_version: None,
         directory,
         title,
     };
-    match state
-        .inner
-        .session_manager()
-        .create_session(session_id.to_string(), request)
+    let manager = state.inner.session_manager();
+    match manager
+        .create_session(session_id.to_string(), request.clone())
         .await
     {
         Ok(_) => Ok(()),
-        Err(SandboxError::SessionAlreadyExists { .. }) => state
-            .inner
-            .session_manager()
-            .set_session_overrides(session_id, model, variant)
-            .await
-            .or_else(|err| match err {
-                SandboxError::SessionNotFound { .. } => Ok(()),
-                other => Err(other),
-            }),
+        Err(SandboxError::SessionAlreadyExists { .. }) => {
+            let should_recreate = manager
+                .get_session_info(session_id)
+                .await
+                .map(|info| info.agent != agent && info.event_count <= 1)
+                .unwrap_or(false);
+            if should_recreate {
+                manager.delete_session(session_id).await?;
+                match manager
+                    .create_session(session_id.to_string(), request.clone())
+                    .await
+                {
+                    Ok(_) => Ok(()),
+                    Err(SandboxError::SessionAlreadyExists { .. }) => {
+                        match manager
+                            .set_session_overrides(session_id, model.clone(), variant.clone())
+                            .await
+                        {
+                            Ok(()) => Ok(()),
+                            Err(SandboxError::SessionNotFound { .. }) => {
+                                tracing::warn!(
+                                    target = "sandbox_agent::opencode",
+                                    session_id,
+                                    "backing session vanished while applying overrides; retrying create_session"
+                                );
+                                match manager
+                                    .create_session(session_id.to_string(), request.clone())
+                                    .await
+                                {
+                                    Ok(_) | Err(SandboxError::SessionAlreadyExists { .. }) => {
+                                        Ok(())
+                                    }
+                                    Err(err) => Err(err),
+                                }
+                            }
+                            Err(other) => Err(other),
+                        }
+                    }
+                    Err(err) => Err(err),
+                }
+            } else {
+                match manager
+                    .set_session_overrides(session_id, model.clone(), variant.clone())
+                    .await
+                {
+                    Ok(()) => Ok(()),
+                    Err(SandboxError::SessionNotFound { .. }) => {
+                        tracing::warn!(
+                            target = "sandbox_agent::opencode",
+                            session_id,
+                            "backing session missing while setting overrides; retrying create_session"
+                        );
+                        match manager
+                            .create_session(session_id.to_string(), request.clone())
+                            .await
+                        {
+                            Ok(_) | Err(SandboxError::SessionAlreadyExists { .. }) => Ok(()),
+                            Err(err) => Err(err),
+                        }
+                    }
+                    Err(other) => Err(other),
+                }
+            }
+        }
         Err(err) => Err(err),
     }
 }
@@ -596,6 +655,13 @@ struct OpenCodeCreateSessionRequest {
     permission: Option<Value>,
     #[serde(alias = "permission_mode")]
     permission_mode: Option<String>,
+    #[schema(value_type = String)]
+    model: Option<Value>,
+    #[serde(rename = "providerID")]
+    provider_id: Option<String>,
+    #[serde(rename = "modelID")]
+    model_id: Option<String>,
+    variant: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -685,6 +751,17 @@ struct SessionSummarizeRequest {
     #[serde(rename = "modelID")]
     model_id: Option<String>,
     auto: Option<bool>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+struct SessionInitRequest {
+    #[serde(rename = "providerID")]
+    provider_id: Option<String>,
+    #[serde(rename = "modelID")]
+    model_id: Option<String>,
+    #[serde(rename = "messageID")]
+    message_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -1002,13 +1079,16 @@ async fn resolve_session_agent(
 ) -> (String, String, String) {
     let cache = opencode_model_cache(state).await;
     let default_model_id = cache.default_model.clone();
-    let mut provider_id = requested_provider
+    let requested_provider = requested_provider
         .filter(|value| !value.is_empty())
         .filter(|value| *value != "sandbox-agent")
         .map(|value| value.to_string());
-    let model_id = requested_model
+    let requested_model = requested_model
         .filter(|value| !value.is_empty())
         .map(|value| value.to_string());
+    let explicit_selection = requested_provider.is_some() || requested_model.is_some();
+    let mut provider_id = requested_provider.clone();
+    let model_id = requested_model.clone();
     if provider_id.is_none() {
         if let Some(model_value) = model_id.as_deref() {
             if let Some(entry) = cache
@@ -1041,7 +1121,7 @@ async fn resolve_session_agent(
     state
         .opencode
         .update_runtime(session_id, |runtime| {
-            if runtime.session_agent_id.is_none() {
+            if runtime.session_agent_id.is_none() || explicit_selection {
                 let agent = resolved_agent.unwrap_or_else(default_agent_id);
                 runtime.session_agent_id = Some(agent.as_str().to_string());
                 runtime.session_provider_id = Some(provider_id.clone());
@@ -1527,6 +1607,61 @@ fn unique_assistant_message_id(
     }
 }
 
+fn set_item_text_delta_capability(
+    runtime: &mut OpenCodeSessionRuntime,
+    item_id: Option<&str>,
+    native_item_id: Option<&str>,
+    supports_text_deltas: bool,
+) {
+    for key in [item_id, native_item_id].into_iter().flatten() {
+        if supports_text_deltas {
+            runtime.non_text_item_ids.remove(key);
+        } else {
+            runtime.non_text_item_ids.insert(key.to_string());
+        }
+    }
+}
+
+fn item_delta_is_non_text(
+    runtime: &OpenCodeSessionRuntime,
+    item_id: Option<&str>,
+    native_item_id: Option<&str>,
+) -> bool {
+    [item_id, native_item_id]
+        .into_iter()
+        .flatten()
+        .any(|key| runtime.non_text_item_ids.contains(key))
+}
+
+fn item_supports_text_deltas(item: &UniversalItem) -> bool {
+    if item.kind != ItemKind::Message {
+        return false;
+    }
+    if !matches!(item.role.as_ref(), Some(ItemRole::Assistant)) {
+        return false;
+    }
+    if item.content.is_empty() {
+        return true;
+    }
+    item.content
+        .iter()
+        .any(|part| matches!(part, ContentPart::Text { .. }))
+}
+
+fn extract_message_text_from_content(parts: &[ContentPart]) -> Option<String> {
+    let mut text = String::new();
+    for part in parts {
+        if let ContentPart::Text { text: chunk } = part {
+            text.push_str(chunk);
+        }
+    }
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
 fn extract_text_from_content(parts: &[ContentPart]) -> Option<String> {
     let mut text = String::new();
     for part in parts {
@@ -1890,42 +2025,76 @@ fn patterns_from_metadata(metadata: &Option<Value>) -> Vec<String> {
     patterns
 }
 
+fn turn_error_from_metadata(metadata: &Option<Value>) -> Option<(String, Option<Value>)> {
+    let error = metadata.as_ref()?.get("error")?;
+    let message = error
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Turn failed")
+        .to_string();
+    Some((message, Some(error.clone())))
+}
+
 async fn apply_universal_event(state: Arc<OpenCodeAppState>, event: UniversalEvent) {
     match event.event_type {
         UniversalEventType::ItemStarted | UniversalEventType::ItemCompleted => {
             if let UniversalEventData::Item(ItemEventData { item }) = &event.data {
-                // turn.completed or session.idle status → emit session.idle
-                if event.event_type == UniversalEventType::ItemCompleted
-                    && item.kind == ItemKind::Status
-                {
-                    if let Some(ContentPart::Status { label, .. }) = item.content.first() {
-                        if label == "turn.completed" || label == "session.idle" {
-                            let runtime = state
-                                .opencode
-                                .update_runtime(&event.session_id, |runtime| {
-                                    if runtime.open_tool_calls.is_empty() {
-                                        runtime.active_assistant_message_id = None;
-                                    }
-                                })
-                                .await;
-                            if !runtime.open_tool_calls.is_empty() {
-                                return;
-                            }
-                            let session_id = event.session_id.clone();
-                            state.opencode.emit_event(json!({
-                                "type": "session.status",
-                                "properties": {"sessionID": session_id, "status": {"type": "idle"}}
-                            }));
-                            state.opencode.emit_event(json!({
-                                "type": "session.idle",
-                                "properties": {"sessionID": session_id}
-                            }));
-                            return;
-                        }
-                    }
-                }
                 apply_item_event(state, event.clone(), item.clone()).await;
             }
+        }
+        UniversalEventType::TurnStarted => {
+            state
+                .opencode
+                .update_runtime(&event.session_id, |runtime| {
+                    runtime.turn_in_progress = true;
+                })
+                .await;
+            let session_id = event.session_id.clone();
+            state.opencode.emit_event(json!({
+                "type": "session.status",
+                "properties": {"sessionID": session_id, "status": {"type": "busy"}}
+            }));
+        }
+        UniversalEventType::TurnEnded => {
+            let turn_data = match &event.data {
+                UniversalEventData::Turn(data) => Some(data.clone()),
+                _ => None,
+            };
+            let mut should_emit_idle = false;
+            let runtime = state
+                .opencode
+                .update_runtime(&event.session_id, |runtime| {
+                    let was_turn_in_progress = runtime.turn_in_progress;
+                    if runtime.open_tool_calls.is_empty() {
+                        runtime.active_assistant_message_id = None;
+                        runtime.turn_in_progress = false;
+                        should_emit_idle = was_turn_in_progress;
+                    } else {
+                        runtime.turn_in_progress = true;
+                        should_emit_idle = false;
+                    }
+                })
+                .await;
+            if !runtime.open_tool_calls.is_empty() {
+                return;
+            }
+            if let Some(turn_data) = turn_data {
+                if let Some((message, details)) = turn_error_from_metadata(&turn_data.metadata) {
+                    emit_session_error(&state.opencode, &event.session_id, &message, None, details);
+                }
+            }
+            if !should_emit_idle {
+                return;
+            }
+            let session_id = event.session_id.clone();
+            state.opencode.emit_event(json!({
+                "type": "session.status",
+                "properties": {"sessionID": session_id, "status": {"type": "idle"}}
+            }));
+            state.opencode.emit_event(json!({
+                "type": "session.idle",
+                "properties": {"sessionID": session_id}
+            }));
         }
         UniversalEventType::ItemDelta => {
             if let UniversalEventData::ItemDelta(ItemDeltaData {
@@ -1945,6 +2114,13 @@ async fn apply_universal_event(state: Arc<OpenCodeAppState>, event: UniversalEve
             }
         }
         UniversalEventType::SessionEnded => {
+            state
+                .opencode
+                .update_runtime(&event.session_id, |runtime| {
+                    runtime.turn_in_progress = false;
+                    runtime.active_assistant_message_id = None;
+                })
+                .await;
             let session_id = event.session_id.clone();
             state.opencode.emit_event(json!({
                 "type": "session.status",
@@ -1968,6 +2144,16 @@ async fn apply_universal_event(state: Arc<OpenCodeAppState>, event: UniversalEve
         UniversalEventType::Error => {
             if let UniversalEventData::Error(error) = &event.data {
                 let session_id = event.session_id.clone();
+                let mut should_emit_idle = false;
+                state
+                    .opencode
+                    .update_runtime(&session_id, |runtime| {
+                        let was_turn_in_progress = runtime.turn_in_progress;
+                        runtime.turn_in_progress = false;
+                        runtime.active_assistant_message_id = None;
+                        should_emit_idle = was_turn_in_progress;
+                    })
+                    .await;
                 emit_session_error(
                     &state.opencode,
                     &session_id,
@@ -1975,7 +2161,9 @@ async fn apply_universal_event(state: Arc<OpenCodeAppState>, event: UniversalEve
                     error.code.as_deref(),
                     error.details.clone(),
                 );
-                emit_session_idle(&state.opencode, &session_id);
+                if should_emit_idle {
+                    emit_session_idle(&state.opencode, &session_id);
+                }
             }
         }
         _ => {}
@@ -2111,16 +2299,6 @@ async fn apply_item_event(
     event: UniversalEvent,
     item: UniversalItem,
 ) {
-    if matches!(item.kind, ItemKind::ToolCall | ItemKind::ToolResult) {
-        apply_tool_item_event(state, event, item).await;
-        return;
-    }
-    if item.kind != ItemKind::Message {
-        return;
-    }
-    if matches!(item.role, Some(ItemRole::User)) {
-        return;
-    }
     let session_id = event.session_id.clone();
     let item_id_key = if item.item_id.is_empty() {
         None
@@ -2128,6 +2306,38 @@ async fn apply_item_event(
         Some(item.item_id.clone())
     };
     let native_id_key = item.native_item_id.clone();
+    let supports_text_deltas = item_supports_text_deltas(&item);
+    let is_user_item = matches!(item.role.as_ref(), Some(ItemRole::User));
+    let _ = state
+        .opencode
+        .update_runtime(&session_id, |runtime| {
+            set_item_text_delta_capability(
+                runtime,
+                item_id_key.as_deref(),
+                native_id_key.as_deref(),
+                supports_text_deltas,
+            );
+            if is_user_item {
+                if let Some(item_key) = item_id_key.as_ref() {
+                    runtime.user_item_ids.insert(item_key.clone());
+                }
+                if let Some(native_key) = native_id_key.as_ref() {
+                    runtime.user_item_ids.insert(native_key.clone());
+                }
+            }
+        })
+        .await;
+
+    if matches!(item.kind, ItemKind::ToolCall | ItemKind::ToolResult) {
+        apply_tool_item_event(state, event, item).await;
+        return;
+    }
+    if item.kind != ItemKind::Message {
+        return;
+    }
+    if is_user_item {
+        return;
+    }
     let mut message_id: Option<String> = None;
     let mut parent_id: Option<String> = None;
     let runtime = state
@@ -2146,6 +2356,7 @@ async fn apply_item_event(
                         .clone()
                         .and_then(|key| runtime.message_id_for_item.get(&key).cloned())
                 })
+                .or_else(|| runtime.active_assistant_message_id.clone())
             {
                 message_id = Some(existing);
             } else {
@@ -2216,7 +2427,7 @@ async fn apply_item_event(
         })
         .await;
 
-    if let Some(text) = extract_text_from_content(&item.content) {
+    if let Some(text) = extract_message_text_from_content(&item.content) {
         if event.event_type == UniversalEventType::ItemStarted {
             // Reset streaming text state for a new assistant item.
             let _ = state
@@ -2677,22 +2888,35 @@ async fn apply_item_delta(
         Some(item_id)
     };
     let native_id_key = native_item_id;
-    let is_user_delta = item_id_key
-        .as_ref()
-        .map(|value| value.starts_with("user_"))
-        .unwrap_or(false)
-        || native_id_key
-            .as_ref()
-            .map(|value| value.starts_with("user_"))
-            .unwrap_or(false);
-    if is_user_delta {
-        return;
-    }
     let mut message_id: Option<String> = None;
     let mut parent_id: Option<String> = None;
+    let mut is_user_delta = false;
+    let mut suppress_non_text_delta = false;
     let runtime = state
         .opencode
         .update_runtime(&session_id, |runtime| {
+            if item_delta_is_non_text(runtime, item_id_key.as_deref(), native_id_key.as_deref()) {
+                suppress_non_text_delta = true;
+                return;
+            }
+            let is_user_from_runtime = item_id_key
+                .as_ref()
+                .is_some_and(|value| runtime.user_item_ids.contains(value))
+                || native_id_key
+                    .as_ref()
+                    .is_some_and(|value| runtime.user_item_ids.contains(value));
+            let is_user_from_prefix = item_id_key
+                .as_ref()
+                .map(|value| value.starts_with("user_"))
+                .unwrap_or(false)
+                || native_id_key
+                    .as_ref()
+                    .map(|value| value.starts_with("user_"))
+                    .unwrap_or(false);
+            if is_user_from_runtime || is_user_from_prefix {
+                is_user_delta = true;
+                return;
+            }
             parent_id = runtime.last_user_message_id.clone();
             if let Some(existing) = item_id_key
                 .clone()
@@ -2720,6 +2944,9 @@ async fn apply_item_delta(
             }
         })
         .await;
+    if is_user_delta || suppress_non_text_delta {
+        return;
+    }
     let message_id = message_id.unwrap_or_else(|| {
         unique_assistant_message_id(&runtime, parent_id.as_ref(), event.sequence)
     });
@@ -3494,6 +3721,10 @@ async fn oc_session_create(
         parent_id: None,
         permission: None,
         permission_mode: None,
+        model: None,
+        provider_id: None,
+        model_id: None,
+        variant: None,
     });
     let directory = state
         .opencode
@@ -3502,7 +3733,19 @@ async fn oc_session_create(
     let id = next_id("ses_", &SESSION_COUNTER);
     let slug = format!("session-{}", id);
     let title = body.title.unwrap_or_else(|| format!("Session {}", id));
-    let permission_mode = body.permission_mode;
+    let permission_mode = body.permission_mode.clone();
+    let requested_provider = body
+        .model
+        .as_ref()
+        .and_then(|v| v.get("providerID"))
+        .and_then(|v| v.as_str())
+        .or(body.provider_id.as_deref());
+    let requested_model = body
+        .model
+        .as_ref()
+        .and_then(|v| v.get("modelID"))
+        .and_then(|v| v.as_str())
+        .or(body.model_id.as_deref());
     let record = OpenCodeSessionRecord {
         id: id.clone(),
         slug,
@@ -3514,7 +3757,7 @@ async fn oc_session_create(
         created_at: now,
         updated_at: now,
         share_url: None,
-        permission_mode,
+        permission_mode: permission_mode.clone(),
     };
 
     let session_value = record.to_value();
@@ -3523,11 +3766,32 @@ async fn oc_session_create(
     sessions.insert(id.clone(), record);
     drop(sessions);
 
+    let (session_agent, provider_id, model_id) =
+        resolve_session_agent(&state, &id, requested_provider, requested_model).await;
+    let session_agent_id = AgentId::parse(&session_agent).unwrap_or_else(default_agent_id);
+    let backing_model = backing_model_for_agent(session_agent_id, &provider_id, &model_id);
+    let backing_variant = body.variant.clone();
+    if let Err(err) = ensure_backing_session(
+        &state,
+        &id,
+        &session_agent,
+        backing_model,
+        backing_variant,
+        permission_mode,
+    )
+    .await
+    {
+        let mut sessions = state.opencode.sessions.lock().await;
+        sessions.remove(&id);
+        drop(sessions);
+        return sandbox_error_response(err).into_response();
+    }
+
     state
         .opencode
         .emit_event(session_event("session.created", &session_value));
 
-    (StatusCode::OK, Json(session_value))
+    (StatusCode::OK, Json(session_value)).into_response()
 }
 
 #[utoipa::path(
@@ -3591,6 +3855,14 @@ async fn oc_session_update(
     let mut sessions = state.opencode.sessions.lock().await;
     if let Some(session) = sessions.get_mut(&session_id) {
         if let Some(title) = body.title {
+            if let Err(err) = state
+                .inner
+                .session_manager()
+                .set_session_title(&session_id, title.clone())
+                .await
+            {
+                return sandbox_error_response(err).into_response();
+            }
             session.title = title;
             session.updated_at = state.opencode.now_ms();
         }
@@ -3616,6 +3888,15 @@ async fn oc_session_delete(
 ) -> impl IntoResponse {
     let mut sessions = state.opencode.sessions.lock().await;
     if let Some(session) = sessions.remove(&session_id) {
+        drop(sessions);
+        if let Err(err) = state
+            .inner
+            .session_manager()
+            .delete_session(&session_id)
+            .await
+        {
+            return sandbox_error_response(err).into_response();
+        }
         state
             .opencode
             .emit_event(session_event("session.deleted", &session.to_value()));
@@ -3632,9 +3913,18 @@ async fn oc_session_delete(
 )]
 async fn oc_session_status(State(state): State<Arc<OpenCodeAppState>>) -> impl IntoResponse {
     let sessions = state.inner.session_manager().list_sessions().await;
+    let runtimes = state.opencode.session_runtime.lock().await;
     let mut status_map = serde_json::Map::new();
     for s in &sessions {
-        let status = if s.ended { "idle" } else { "busy" };
+        let status = if runtimes
+            .get(&s.session_id)
+            .map(|runtime| runtime.turn_in_progress)
+            .unwrap_or(false)
+        {
+            "busy"
+        } else {
+            "idle"
+        };
         status_map.insert(s.session_id.clone(), json!({"type": status}));
     }
     (StatusCode::OK, Json(Value::Object(status_map)))
@@ -3669,11 +3959,61 @@ async fn oc_session_children() -> impl IntoResponse {
     post,
     path = "/session/{sessionID}/init",
     params(("sessionID" = String, Path, description = "Session ID")),
+    request_body = SessionInitRequest,
     responses((status = 200)),
     tag = "opencode"
 )]
-async fn oc_session_init() -> impl IntoResponse {
-    bool_ok(true)
+async fn oc_session_init(
+    State(state): State<Arc<OpenCodeAppState>>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<DirectoryQuery>,
+    body: Option<Json<SessionInitRequest>>,
+) -> impl IntoResponse {
+    let directory = state
+        .opencode
+        .directory_for(&headers, query.directory.as_ref());
+    let _ = state.opencode.ensure_session(&session_id, directory).await;
+    let body = body.map(|json| json.0).unwrap_or(SessionInitRequest {
+        provider_id: None,
+        model_id: None,
+        message_id: None,
+    });
+    let requested_provider = body
+        .provider_id
+        .as_deref()
+        .filter(|value| !value.is_empty());
+    let requested_model = body.model_id.as_deref().filter(|value| !value.is_empty());
+    if requested_provider.is_none() && requested_model.is_none() {
+        return bool_ok(true).into_response();
+    }
+    if requested_provider.is_none() || requested_model.is_none() {
+        return bad_request("providerID and modelID are required when selecting a model")
+            .into_response();
+    }
+    let (session_agent, provider_id, model_id) =
+        resolve_session_agent(&state, &session_id, requested_provider, requested_model).await;
+    let session_agent_id = AgentId::parse(&session_agent).unwrap_or_else(default_agent_id);
+    let backing_model = backing_model_for_agent(session_agent_id, &provider_id, &model_id);
+    let session_permission_mode = {
+        let sessions = state.opencode.sessions.lock().await;
+        sessions
+            .get(&session_id)
+            .and_then(|s| s.permission_mode.clone())
+    };
+    if let Err(err) = ensure_backing_session(
+        &state,
+        &session_id,
+        &session_agent,
+        backing_model,
+        None,
+        session_permission_mode,
+    )
+    .await
+    {
+        return sandbox_error_response(err).into_response();
+    }
+    bool_ok(true).into_response()
 }
 
 #[utoipa::path(
@@ -3877,6 +4217,7 @@ async fn oc_session_message_create(
     let _ = state
         .opencode
         .update_runtime(&session_id, |runtime| {
+            runtime.turn_in_progress = true;
             runtime.last_user_message_id = Some(user_message_id.clone());
             runtime.active_assistant_message_id = None;
             runtime.last_agent = Some(agent_mode.clone());
@@ -3902,6 +4243,13 @@ async fn oc_session_message_create(
     )
     .await
     {
+        let _ = state
+            .opencode
+            .update_runtime(&session_id, |runtime| {
+                runtime.turn_in_progress = false;
+                runtime.active_assistant_message_id = None;
+            })
+            .await;
         tracing::warn!(
             target = "sandbox_agent::opencode",
             ?err,
@@ -3926,6 +4274,13 @@ async fn oc_session_message_create(
             .send_message(session_id.clone(), prompt_text)
             .await
         {
+            let _ = state
+                .opencode
+                .update_runtime(&session_id, |runtime| {
+                    runtime.turn_in_progress = false;
+                    runtime.active_assistant_message_id = None;
+                })
+                .await;
             tracing::warn!(
                 target = "sandbox_agent::opencode",
                 ?err,
@@ -5421,3 +5776,107 @@ async fn oc_tui_select_session(
     tags((name = "opencode", description = "OpenCode compatibility API"))
 )]
 pub struct OpenCodeApiDoc;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sandbox_agent_universal_agent_schema::ReasoningVisibility;
+
+    fn assistant_item(content: Vec<ContentPart>) -> UniversalItem {
+        UniversalItem {
+            item_id: "itm_assistant".to_string(),
+            native_item_id: Some("native_assistant".to_string()),
+            parent_id: None,
+            kind: ItemKind::Message,
+            role: Some(ItemRole::Assistant),
+            content,
+            status: ItemStatus::InProgress,
+        }
+    }
+
+    #[test]
+    fn extract_message_text_ignores_non_text_parts() {
+        let parts = vec![
+            ContentPart::Status {
+                label: "Thinking".to_string(),
+                detail: Some("Preparing friendly brief response".to_string()),
+            },
+            ContentPart::Reasoning {
+                text: "Preparing friendly brief response".to_string(),
+                visibility: ReasoningVisibility::Public,
+            },
+            ContentPart::Text {
+                text: "Hey! How can I help?".to_string(),
+            },
+            ContentPart::Json {
+                json: serde_json::json!({"ignored": true}),
+            },
+        ];
+
+        assert_eq!(
+            extract_message_text_from_content(&parts),
+            Some("Hey! How can I help?".to_string())
+        );
+    }
+
+    #[test]
+    fn item_supports_text_deltas_only_for_assistant_text_messages() {
+        assert!(item_supports_text_deltas(&assistant_item(Vec::new())));
+        assert!(item_supports_text_deltas(&assistant_item(vec![
+            ContentPart::Text {
+                text: "hello".to_string(),
+            }
+        ])));
+        assert!(!item_supports_text_deltas(&assistant_item(vec![
+            ContentPart::Reasoning {
+                text: "internal".to_string(),
+                visibility: ReasoningVisibility::Private,
+            }
+        ])));
+
+        let user = UniversalItem {
+            item_id: "itm_user".to_string(),
+            native_item_id: Some("native_user".to_string()),
+            parent_id: None,
+            kind: ItemKind::Message,
+            role: Some(ItemRole::User),
+            content: vec![ContentPart::Text {
+                text: "hello".to_string(),
+            }],
+            status: ItemStatus::InProgress,
+        };
+        assert!(!item_supports_text_deltas(&user));
+
+        let status = UniversalItem {
+            item_id: "itm_status".to_string(),
+            native_item_id: Some("native_status".to_string()),
+            parent_id: None,
+            kind: ItemKind::Status,
+            role: Some(ItemRole::Assistant),
+            content: vec![ContentPart::Status {
+                label: "thinking".to_string(),
+                detail: None,
+            }],
+            status: ItemStatus::InProgress,
+        };
+        assert!(!item_supports_text_deltas(&status));
+    }
+
+    #[test]
+    fn text_delta_capability_blocks_non_text_item_ids() {
+        let mut runtime = OpenCodeSessionRuntime::default();
+        set_item_text_delta_capability(&mut runtime, Some("itm_1"), Some("native_1"), false);
+        assert!(item_delta_is_non_text(
+            &runtime,
+            Some("itm_1"),
+            Some("native_1")
+        ));
+
+        set_item_text_delta_capability(&mut runtime, Some("itm_1"), Some("native_1"), true);
+        assert!(!item_delta_is_non_text(
+            &runtime,
+            Some("itm_1"),
+            Some("native_1")
+        ));
+    }
+}

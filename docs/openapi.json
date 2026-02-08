@@ -1157,11 +1157,19 @@
             "type": "string",
             "nullable": true
           },
+          "directory": {
+            "type": "string",
+            "nullable": true
+          },
           "model": {
             "type": "string",
             "nullable": true
           },
           "permissionMode": {
+            "type": "string",
+            "nullable": true
+          },
+          "title": {
             "type": "string",
             "nullable": true
           },
@@ -1595,7 +1603,9 @@
           "agentMode",
           "permissionMode",
           "ended",
-          "eventCount"
+          "eventCount",
+          "createdAt",
+          "updatedAt"
         ],
         "properties": {
           "agent": {
@@ -1603,6 +1613,14 @@
           },
           "agentMode": {
             "type": "string"
+          },
+          "createdAt": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "directory": {
+            "type": "string",
+            "nullable": true
           },
           "ended": {
             "type": "boolean"
@@ -1625,6 +1643,14 @@
           },
           "sessionId": {
             "type": "string"
+          },
+          "title": {
+            "type": "string",
+            "nullable": true
+          },
+          "updatedAt": {
+            "type": "integer",
+            "format": "int64"
           },
           "variant": {
             "type": "string",
@@ -1689,6 +1715,31 @@
           "daemon"
         ]
       },
+      "TurnEventData": {
+        "type": "object",
+        "required": [
+          "phase"
+        ],
+        "properties": {
+          "metadata": {
+            "nullable": true
+          },
+          "phase": {
+            "$ref": "#/components/schemas/TurnPhase"
+          },
+          "turn_id": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "TurnPhase": {
+        "type": "string",
+        "enum": [
+          "started",
+          "ended"
+        ]
+      },
       "TurnStreamQuery": {
         "type": "object",
         "properties": {
@@ -1749,6 +1800,9 @@
       "UniversalEventData": {
         "oneOf": [
           {
+            "$ref": "#/components/schemas/TurnEventData"
+          },
+          {
             "$ref": "#/components/schemas/SessionStartedData"
           },
           {
@@ -1779,6 +1833,8 @@
         "enum": [
           "session.started",
           "session.ended",
+          "turn.started",
+          "turn.ended",
           "item.started",
           "item.delta",
           "item.completed",

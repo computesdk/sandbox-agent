@@ -169,8 +169,10 @@ export interface components {
       agent: string;
       agentMode?: string | null;
       agentVersion?: string | null;
+      directory?: string | null;
       model?: string | null;
       permissionMode?: string | null;
+      title?: string | null;
       variant?: string | null;
     };
     CreateSessionResponse: {
@@ -287,6 +289,9 @@ export interface components {
     SessionInfo: {
       agent: string;
       agentMode: string;
+      /** Format: int64 */
+      createdAt: number;
+      directory?: string | null;
       ended: boolean;
       /** Format: int64 */
       eventCount: number;
@@ -294,6 +299,9 @@ export interface components {
       nativeSessionId?: string | null;
       permissionMode: string;
       sessionId: string;
+      title?: string | null;
+      /** Format: int64 */
+      updatedAt: number;
       variant?: string | null;
     };
     SessionListResponse: {
@@ -314,6 +322,13 @@ export interface components {
     };
     /** @enum {string} */
     TerminatedBy: "agent" | "daemon";
+    TurnEventData: {
+      metadata?: unknown;
+      phase: components["schemas"]["TurnPhase"];
+      turn_id?: string | null;
+    };
+    /** @enum {string} */
+    TurnPhase: "started" | "ended";
     TurnStreamQuery: {
       includeRaw?: boolean | null;
     };
@@ -330,9 +345,9 @@ export interface components {
       time: string;
       type: components["schemas"]["UniversalEventType"];
     };
-    UniversalEventData: components["schemas"]["SessionStartedData"] | components["schemas"]["SessionEndedData"] | components["schemas"]["ItemEventData"] | components["schemas"]["ItemDeltaData"] | components["schemas"]["ErrorData"] | components["schemas"]["PermissionEventData"] | components["schemas"]["QuestionEventData"] | components["schemas"]["AgentUnparsedData"];
+    UniversalEventData: components["schemas"]["TurnEventData"] | components["schemas"]["SessionStartedData"] | components["schemas"]["SessionEndedData"] | components["schemas"]["ItemEventData"] | components["schemas"]["ItemDeltaData"] | components["schemas"]["ErrorData"] | components["schemas"]["PermissionEventData"] | components["schemas"]["QuestionEventData"] | components["schemas"]["AgentUnparsedData"];
     /** @enum {string} */
-    UniversalEventType: "session.started" | "session.ended" | "item.started" | "item.delta" | "item.completed" | "error" | "permission.requested" | "permission.resolved" | "question.requested" | "question.resolved" | "agent.unparsed";
+    UniversalEventType: "session.started" | "session.ended" | "turn.started" | "turn.ended" | "item.started" | "item.delta" | "item.completed" | "error" | "permission.requested" | "permission.resolved" | "question.requested" | "question.resolved" | "agent.unparsed";
     UniversalItem: {
       content: components["schemas"]["ContentPart"][];
       item_id: string;

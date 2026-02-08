@@ -43,6 +43,67 @@ describe("OpenCode-compatible Session API", () => {
     return session?.permissionMode;
   }
 
+  async function getBackingSession(sessionId: string) {
+    const response = await fetch(`${handle.baseUrl}/v1/sessions`, {
+      headers: { Authorization: `Bearer ${handle.token}` },
+    });
+    expect(response.ok).toBe(true);
+    const data = await response.json();
+    return (data.sessions ?? []).find((item: any) => item.sessionId === sessionId);
+  }
+
+  async function initSessionViaHttp(
+    sessionId: string,
+    body: Record<string, unknown> = {}
+  ): Promise<{ response: Response; data: any }> {
+    const response = await fetch(`${handle.baseUrl}/opencode/session/${sessionId}/init`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${handle.token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+    const data = await response.json();
+    return { response, data };
+  }
+
+  async function listMessagesViaHttp(sessionId: string): Promise<any[]> {
+    const response = await fetch(`${handle.baseUrl}/opencode/session/${sessionId}/message`, {
+      headers: { Authorization: `Bearer ${handle.token}` },
+    });
+    expect(response.ok).toBe(true);
+    return response.json();
+  }
+
+  async function getProvidersViaHttp(): Promise<{
+    connected: string[];
+    default: Record<string, string>;
+  }> {
+    const response = await fetch(`${handle.baseUrl}/opencode/provider`, {
+      headers: { Authorization: `Bearer ${handle.token}` },
+    });
+    expect(response.ok).toBe(true);
+    const data = await response.json();
+    return {
+      connected: data.connected ?? [],
+      default: data.default ?? {},
+    };
+  }
+
+  async function waitForAssistantMessage(sessionId: string, timeoutMs = 10_000): Promise<any> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const messages = await listMessagesViaHttp(sessionId);
+      const assistant = messages.find((message) => message?.info?.role === "assistant");
+      if (assistant) {
+        return assistant;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    throw new Error("Timed out waiting for assistant message");
+  }
+
   beforeAll(async () => {
     // Build the binary if needed
     await buildSandboxAgent();
@@ -142,6 +203,78 @@ describe("OpenCode-compatible Session API", () => {
 
       expect(response.data).toBeDefined();
       expect(response.data?.length).toBe(2);
+    });
+  });
+
+  describe("session.init", () => {
+    it("should accept empty init body and keep message flow working", async () => {
+      const session = await client.session.create();
+      const sessionId = session.data?.id!;
+      expect(sessionId).toBeDefined();
+
+      const initialized = await initSessionViaHttp(sessionId, {});
+      expect(initialized.response.ok).toBe(true);
+      expect(initialized.data).toBe(true);
+
+      const prompt = await client.session.prompt({
+        path: { id: sessionId },
+        body: {
+          parts: [{ type: "text", text: "hello after init" }],
+        } as any,
+      });
+      expect(prompt.error).toBeUndefined();
+
+      const assistant = await waitForAssistantMessage(sessionId);
+      expect(assistant?.info?.role).toBe("assistant");
+    });
+
+    it("should apply explicit init model selection to the backing session", async () => {
+      const session = await client.session.create();
+      const sessionId = session.data?.id!;
+      expect(sessionId).toBeDefined();
+
+      const initialized = await initSessionViaHttp(sessionId, {
+        providerID: "codex",
+        modelID: "gpt-5",
+        messageID: "msg_init",
+      });
+      expect(initialized.response.ok).toBe(true);
+      expect(initialized.data).toBe(true);
+
+      const backingSession = await getBackingSession(sessionId);
+      expect(backingSession?.agent).toBe("codex");
+      expect(backingSession?.model).toBe("gpt-5");
+    });
+
+    it("should accept first prompt after codex init without session-not-found", async () => {
+      const providers = await getProvidersViaHttp();
+      if (!providers.connected.includes("codex")) {
+        return;
+      }
+      const codexDefaultModel = providers.default?.codex;
+      if (!codexDefaultModel) {
+        return;
+      }
+
+      const session = await client.session.create();
+      const sessionId = session.data?.id!;
+      expect(sessionId).toBeDefined();
+
+      const initialized = await initSessionViaHttp(sessionId, {
+        providerID: "codex",
+        modelID: codexDefaultModel,
+      });
+      expect(initialized.response.ok).toBe(true);
+      expect(initialized.data).toBe(true);
+
+      const prompt = await client.session.prompt({
+        path: { id: sessionId },
+        body: {
+          model: { providerID: "codex", modelID: codexDefaultModel },
+          parts: [{ type: "text", text: "hello after codex init" }],
+        },
+      });
+      expect(prompt.error).toBeUndefined();
     });
   });
 

@@ -8,20 +8,16 @@ session_a:
     seq: 1
     session: started
     type: session.started
+  - seq: 2
+    type: turn.started
   - item:
       content_types:
         - text
       kind: message
       role: user
       status: in_progress
-    seq: 2
-    type: item.started
-  - delta:
-      delta: "<redacted>"
-      item_id: "<redacted>"
-      native_item_id: "<redacted>"
     seq: 3
-    type: item.delta
+    type: item.started
   - item:
       content_types:
         - text
@@ -49,20 +45,16 @@ session_b:
     seq: 1
     session: started
     type: session.started
+  - seq: 2
+    type: turn.started
   - item:
       content_types:
         - text
       kind: message
       role: user
       status: in_progress
-    seq: 2
-    type: item.started
-  - delta:
-      delta: "<redacted>"
-      item_id: "<redacted>"
-      native_item_id: "<redacted>"
     seq: 3
-    type: item.delta
+    type: item.started
   - item:
       content_types:
         - text
