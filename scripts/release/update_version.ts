@@ -18,6 +18,16 @@ export async function updateVersion(opts: ReleaseOpts) {
 			replace: `[workspace.package]\nversion = "${opts.version}"`,
 		},
 		{
+			path: "sdks/cli-shared/package.json",
+			find: /"version": ".*"/,
+			replace: `"version": "${opts.version}"`,
+		},
+		{
+			path: "sdks/acp-http-client/package.json",
+			find: /"version": ".*"/,
+			replace: `"version": "${opts.version}"`,
+		},
+		{
 			path: "sdks/typescript/package.json",
 			find: /"version": ".*"/,
 			replace: `"version": "${opts.version}"`,
@@ -28,7 +38,17 @@ export async function updateVersion(opts: ReleaseOpts) {
 			replace: `"version": "${opts.version}"`,
 		},
 		{
+			path: "sdks/gigacode/package.json",
+			find: /"version": ".*"/,
+			replace: `"version": "${opts.version}"`,
+		},
+		{
 			path: "sdks/cli/platforms/*/package.json",
+			find: /"version": ".*"/,
+			replace: `"version": "${opts.version}"`,
+		},
+		{
+			path: "sdks/gigacode/platforms/*/package.json",
 			find: /"version": ".*"/,
 			replace: `"version": "${opts.version}"`,
 		},
@@ -41,8 +61,9 @@ export async function updateVersion(opts: ReleaseOpts) {
 		"sandbox-agent-error",
 		"sandbox-agent-agent-management",
 		"sandbox-agent-agent-credentials",
-		"sandbox-agent-universal-agent-schema",
-		"sandbox-agent-extracted-agent-schemas",
+		"sandbox-agent-opencode-adapter",
+		"sandbox-agent-opencode-server-manager",
+		"acp-http-adapter",
 	];
 
 	const cargoTomlPath = `${opts.root}/Cargo.toml`;
@@ -65,10 +86,11 @@ export async function updateVersion(opts: ReleaseOpts) {
 		const paths = await glob(globPath, { cwd: opts.root });
 		assert(paths.length > 0, `no paths matched: ${globPath}`);
 		for (const path of paths) {
-			const file = await fs.readFile(path, "utf-8");
-			assert(find.test(file), `file does not match ${find}: ${path}`);
+			const fullPath = `${opts.root}/${path}`;
+			const file = await fs.readFile(fullPath, "utf-8");
+			assert(find.test(file), `file does not match ${find}: ${fullPath}`);
 			const newFile = file.replace(find, replace);
-			await fs.writeFile(path, newFile);
+			await fs.writeFile(fullPath, newFile);
 
 			await $({ cwd: opts.root })`git add ${path}`;
 		}

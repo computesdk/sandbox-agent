@@ -1,16 +1,16 @@
-import { MessageSquare, PauseCircle, PlayCircle, Plus, Square, Terminal } from "lucide-react";
+import { CheckSquare, MessageSquare, Plus, Square, Terminal } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import type { AgentInfo, AgentModeInfo, PermissionEventData, QuestionEventData } from "sandbox-agent";
-import ApprovalsTab from "../debug/ApprovalsTab";
+import type { AgentInfo } from "sandbox-agent";
+
+type AgentModeInfo = { id: string; name: string; description: string };
+type AgentModelInfo = { id: string; name?: string };
+import SessionCreateMenu, { type SessionConfig } from "../SessionCreateMenu";
 import ChatInput from "./ChatInput";
 import ChatMessages from "./ChatMessages";
-import ChatSetup from "./ChatSetup";
 import type { TimelineEntry } from "./types";
 
 const ChatPanel = ({
   sessionId,
-  polling,
-  turnStreaming,
   transcriptEntries,
   sessionError,
   message,
@@ -18,79 +18,39 @@ const ChatPanel = ({
   onSendMessage,
   onKeyDown,
   onCreateSession,
+  onSelectAgent,
   agents,
   agentsLoading,
   agentsError,
   messagesEndRef,
-  agentId,
   agentLabel,
-  agentMode,
-  permissionMode,
-  model,
-  variant,
-  streamMode,
-  activeModes,
   currentAgentVersion,
-  hasSession,
-  modesLoading,
-  modesError,
-  onAgentModeChange,
-  onPermissionModeChange,
-  onModelChange,
-  onVariantChange,
-  onStreamModeChange,
-  onToggleStream,
+  sessionEnded,
   onEndSession,
-  eventError,
-  questionRequests,
-  permissionRequests,
-  questionSelections,
-  onSelectQuestionOption,
-  onAnswerQuestion,
-  onRejectQuestion,
-  onReplyPermission
+  modesByAgent,
+  modelsByAgent,
+  defaultModelByAgent,
 }: {
   sessionId: string;
-  polling: boolean;
-  turnStreaming: boolean;
   transcriptEntries: TimelineEntry[];
   sessionError: string | null;
   message: string;
   onMessageChange: (value: string) => void;
   onSendMessage: () => void;
   onKeyDown: (event: React.KeyboardEvent<HTMLTextAreaElement>) => void;
-  onCreateSession: (agentId: string) => void;
+  onCreateSession: (agentId: string, config: SessionConfig) => void;
+  onSelectAgent: (agentId: string) => Promise<void>;
   agents: AgentInfo[];
   agentsLoading: boolean;
   agentsError: string | null;
   messagesEndRef: React.RefObject<HTMLDivElement>;
-  agentId: string;
   agentLabel: string;
-  agentMode: string;
-  permissionMode: string;
-  model: string;
-  variant: string;
-  streamMode: "poll" | "sse" | "turn";
-  activeModes: AgentModeInfo[];
   currentAgentVersion?: string | null;
-  hasSession: boolean;
-  modesLoading: boolean;
-  modesError: string | null;
-  onAgentModeChange: (value: string) => void;
-  onPermissionModeChange: (value: string) => void;
-  onModelChange: (value: string) => void;
-  onVariantChange: (value: string) => void;
-  onStreamModeChange: (value: "poll" | "sse" | "turn") => void;
-  onToggleStream: () => void;
+  sessionEnded: boolean;
   onEndSession: () => void;
-  eventError: string | null;
-  questionRequests: QuestionEventData[];
-  permissionRequests: PermissionEventData[];
-  questionSelections: Record<string, string[][]>;
-  onSelectQuestionOption: (requestId: string, optionLabel: string) => void;
-  onAnswerQuestion: (request: QuestionEventData) => void;
-  onRejectQuestion: (requestId: string) => void;
-  onReplyPermission: (requestId: string, reply: "once" | "always" | "reject") => void;
+  modesByAgent: Record<string, AgentModeInfo[]>;
+  modelsByAgent: Record<string, AgentModelInfo[]>;
+  defaultModelByAgent: Record<string, string>;
 }) => {
   const [showAgentMenu, setShowAgentMenu] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -107,19 +67,6 @@ const ChatPanel = ({
     return () => document.removeEventListener("mousedown", handler);
   }, [showAgentMenu]);
 
-  const agentLabels: Record<string, string> = {
-    claude: "Claude Code",
-    codex: "Codex",
-    opencode: "OpenCode",
-    amp: "Amp",
-    mock: "Mock"
-  };
-
-  const hasApprovals = questionRequests.length > 0 || permissionRequests.length > 0;
-  const isTurnMode = streamMode === "turn";
-  const isStreaming = isTurnMode ? turnStreaming : polling;
-  const turnLabel = turnStreaming ? "Streaming" : "On Send";
-
   return (
     <div className="chat-panel">
       <div className="panel-header">
@@ -127,61 +74,26 @@ const ChatPanel = ({
           <MessageSquare className="button-icon" />
           <span className="panel-title">{sessionId ? "Session" : "No Session"}</span>
           {sessionId && <span className="session-id-display">{sessionId}</span>}
-          {sessionId && (
-            <span className="session-agent-display">
-              {agentLabel}
-              {currentAgentVersion && <span className="session-agent-version">v{currentAgentVersion}</span>}
-            </span>
-          )}
         </div>
         <div className="panel-header-right">
           {sessionId && (
-            <button
-              type="button"
-              className="button ghost small"
-              onClick={onEndSession}
-              title="End session"
-            >
-              <Square size={12} />
-              End
-            </button>
+            sessionEnded ? (
+              <span className="button ghost small" style={{ opacity: 0.5, cursor: "default" }} title="Session ended">
+                <CheckSquare size={12} />
+                Ended
+              </span>
+            ) : (
+              <button
+                type="button"
+                className="button ghost small"
+                onClick={onEndSession}
+                title="End session"
+              >
+                <Square size={12} />
+                End
+              </button>
+            )
           )}
-          <div className="setup-stream">
-            <select
-              className="setup-select-small"
-              value={streamMode}
-              onChange={(e) => onStreamModeChange(e.target.value as "poll" | "sse" | "turn")}
-              title="Stream Mode"
-              disabled={!sessionId}
-            >
-              <option value="poll">Poll</option>
-              <option value="sse">SSE</option>
-              <option value="turn">Turn</option>
-            </select>
-            <button
-              className={`setup-stream-btn ${isStreaming ? "active" : ""}`}
-              onClick={onToggleStream}
-              title={isTurnMode ? "Turn streaming starts on send" : polling ? "Stop streaming" : "Start streaming"}
-              disabled={!sessionId || isTurnMode}
-            >
-              {isTurnMode ? (
-                <>
-                  <PlayCircle size={14} />
-                  <span>{turnLabel}</span>
-                </>
-              ) : polling ? (
-                <>
-                  <PauseCircle size={14} />
-                  <span>Pause</span>
-                </>
-              ) : (
-                <>
-                  <PlayCircle size={14} />
-                  <span>Resume</span>
-                </>
-              )}
-            </button>
-          </div>
         </div>
       </div>
 
@@ -199,32 +111,18 @@ const ChatPanel = ({
                 <Plus className="button-icon" />
                 Create Session
               </button>
-              {showAgentMenu && (
-                <div className="empty-state-menu">
-                  {agentsLoading && <div className="sidebar-add-status">Loading agents...</div>}
-                  {agentsError && <div className="sidebar-add-status error">{agentsError}</div>}
-                  {!agentsLoading && !agentsError && agents.length === 0 && (
-                    <div className="sidebar-add-status">No agents available.</div>
-                  )}
-                  {!agentsLoading && !agentsError &&
-                    agents.map((agent) => (
-                      <button
-                        key={agent.id}
-                        className="sidebar-add-option"
-                        onClick={() => {
-                          onCreateSession(agent.id);
-                          setShowAgentMenu(false);
-                        }}
-                      >
-                        <div className="agent-option-left">
-                          <span className="agent-option-name">{agentLabels[agent.id] ?? agent.id}</span>
-                          {agent.version && <span className="agent-badge version">v{agent.version}</span>}
-                        </div>
-                        {agent.installed && <span className="agent-badge installed">Installed</span>}
-                      </button>
-                    ))}
-                </div>
-              )}
+              <SessionCreateMenu
+                agents={agents}
+                agentsLoading={agentsLoading}
+                agentsError={agentsError}
+                modesByAgent={modesByAgent}
+                modelsByAgent={modelsByAgent}
+                defaultModelByAgent={defaultModelByAgent}
+                onCreateSession={onCreateSession}
+                onSelectAgent={onSelectAgent}
+                open={showAgentMenu}
+                onClose={() => setShowAgentMenu(false)}
+              />
             </div>
           </div>
         ) : transcriptEntries.length === 0 && !sessionError ? (
@@ -232,36 +130,15 @@ const ChatPanel = ({
             <Terminal className="empty-state-icon" />
             <div className="empty-state-title">Ready to Chat</div>
             <p className="empty-state-text">Send a message to start a conversation with the agent.</p>
-            {agentId === "mock" && (
-              <div className="mock-agent-hint">
-                The mock agent simulates agent responses for testing the inspector UI without requiring API credentials. Send <code>help</code> for available commands.
-              </div>
-            )}
           </div>
         ) : (
           <ChatMessages
             entries={transcriptEntries}
             sessionError={sessionError}
-            eventError={eventError}
             messagesEndRef={messagesEndRef}
           />
         )}
       </div>
-
-      {hasApprovals && (
-        <div className="approvals-inline">
-          <div className="approvals-inline-header">Approvals</div>
-          <ApprovalsTab
-            questionRequests={questionRequests}
-            permissionRequests={permissionRequests}
-            questionSelections={questionSelections}
-            onSelectQuestionOption={onSelectQuestionOption}
-            onAnswerQuestion={onAnswerQuestion}
-            onRejectQuestion={onRejectQuestion}
-            onReplyPermission={onReplyPermission}
-          />
-        </div>
-      )}
 
       <ChatInput
         message={message}
@@ -269,23 +146,23 @@ const ChatPanel = ({
         onSendMessage={onSendMessage}
         onKeyDown={onKeyDown}
         placeholder={sessionId ? "Send a message..." : "Select or create a session first"}
-        disabled={!sessionId || turnStreaming}
+        disabled={!sessionId}
       />
 
-      <ChatSetup
-        agentMode={agentMode}
-        permissionMode={permissionMode}
-        model={model}
-        variant={variant}
-        activeModes={activeModes}
-        modesLoading={modesLoading}
-        modesError={modesError}
-        onAgentModeChange={onAgentModeChange}
-        onPermissionModeChange={onPermissionModeChange}
-        onModelChange={onModelChange}
-        onVariantChange={onVariantChange}
-        hasSession={hasSession}
-      />
+      {sessionId && (
+        <div className="session-config-bar">
+          <div className="session-config-field">
+            <span className="session-config-label">Agent</span>
+            <span className="session-config-value">{agentLabel}</span>
+          </div>
+          {currentAgentVersion && (
+            <div className="session-config-field">
+              <span className="session-config-label">Version</span>
+              <span className="session-config-value">{currentAgentVersion}</span>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 };

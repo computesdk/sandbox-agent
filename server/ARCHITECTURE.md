@@ -261,7 +261,7 @@ All agents receive API keys via environment variables:
 
 | Agent | Environment Variables |
 |-------|----------------------|
-| Claude | `ANTHROPIC_API_KEY`, `CLAUDE_API_KEY` |
+| Claude | `ANTHROPIC_API_KEY`, `CLAUDE_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_AUTH_TOKEN` |
 | Codex | `OPENAI_API_KEY`, `CODEX_API_KEY` |
 | OpenCode | `OPENAI_API_KEY` |
 | Amp | `ANTHROPIC_API_KEY` |
@@ -313,7 +313,7 @@ const client = await SandboxAgent.connect({
 
 ### Auto-Detection
 
-`SandboxAgent` provides two factory methods:
+Sandbox Agent provides two factory methods:
 
 ```typescript
 // Connect to existing server

@@ -1,6 +1,9 @@
-import type { AgentCapabilities } from "sandbox-agent";
-
-export type AgentCapabilitiesView = AgentCapabilities & {
+export type FeatureCoverageView = {
+  unstable_methods?: boolean;
+  planMode?: boolean;
+  permissions?: boolean;
+  questions?: boolean;
+  toolCalls?: boolean;
   toolResults?: boolean;
   textMessages?: boolean;
   images?: boolean;
@@ -14,9 +17,12 @@ export type AgentCapabilitiesView = AgentCapabilities & {
   mcpTools?: boolean;
   streamingDeltas?: boolean;
   itemStarted?: boolean;
+  variants?: boolean;
+  sharedProcess?: boolean;
 };
 
-export const emptyCapabilities: AgentCapabilitiesView = {
+export const emptyFeatureCoverage: FeatureCoverageView = {
+  unstable_methods: false,
   planMode: false,
   permissions: false,
   questions: false,
@@ -34,5 +40,6 @@ export const emptyCapabilities: AgentCapabilitiesView = {
   mcpTools: false,
   streamingDeltas: false,
   itemStarted: false,
+  variants: false,
   sharedProcess: false
 };

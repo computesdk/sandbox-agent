@@ -1,5 +1,6 @@
 import { Daytona, Image } from "@daytonaio/sdk";
-import { runPrompt } from "@sandbox-agent/example-shared";
+import { SandboxAgent } from "sandbox-agent";
+import { detectAgent, buildInspectorUrl, waitForHealth } from "@sandbox-agent/example-shared";
 
 const daytona = new Daytona();
 
@@ -12,7 +13,7 @@ if (process.env.OPENAI_API_KEY)
 // Build a custom image with sandbox-agent pre-installed (slower first run, faster subsequent runs)
 const image = Image.base("ubuntu:22.04").runCommands(
 	"apt-get update && apt-get install -y curl ca-certificates",
-	"curl -fsSL https://releases.rivet.dev/sandbox-agent/latest/install.sh | sh",
+	"curl -fsSL https://releases.rivet.dev/sandbox-agent/0.2.x/install.sh | sh",
 );
 
 console.log("Creating Daytona sandbox (first run builds the base image and may take a few minutes, subsequent runs are fast)...");
@@ -24,12 +25,21 @@ await sandbox.process.executeCommand(
 
 const baseUrl = (await sandbox.getSignedPreviewUrl(3000, 4 * 60 * 60)).url;
 
+console.log("Waiting for server...");
+await waitForHealth({ baseUrl });
+
+const client = await SandboxAgent.connect({ baseUrl });
+const session = await client.createSession({ agent: detectAgent(), sessionInit: { cwd: "/home/daytona", mcpServers: [] } });
+const sessionId = session.id;
+
+console.log(`  UI: ${buildInspectorUrl({ baseUrl, sessionId })}`);
+console.log("  Press Ctrl+C to stop.");
+
+const keepAlive = setInterval(() => {}, 60_000);
 const cleanup = async () => {
+	clearInterval(keepAlive);
 	await sandbox.delete(60);
 	process.exit(0);
 };
 process.once("SIGINT", cleanup);
 process.once("SIGTERM", cleanup);
-
-await runPrompt(baseUrl);
-await cleanup();

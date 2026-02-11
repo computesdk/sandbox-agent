@@ -63,6 +63,8 @@ pub fn test_agents_from_env() -> Result<Vec<TestAgentConfig>, TestAgentConfigErr
                     AgentId::Codex,
                     AgentId::Opencode,
                     AgentId::Amp,
+                    AgentId::Pi,
+                    AgentId::Cursor,
                 ]);
                 continue;
             }
@@ -137,6 +139,7 @@ pub fn test_agents_from_env() -> Result<Vec<TestAgentConfig>, TestAgentConfigErr
                 }
                 credentials_with(anthropic_cred.clone(), openai_cred.clone())
             }
+            AgentId::Pi | AgentId::Cursor => credentials_with(None, None),
             AgentId::Mock => credentials_with(None, None),
         };
         configs.push(TestAgentConfig { agent, credentials });
@@ -303,6 +306,8 @@ fn detect_system_agents() -> Vec<AgentId> {
         AgentId::Codex,
         AgentId::Opencode,
         AgentId::Amp,
+        AgentId::Pi,
+        AgentId::Cursor,
     ];
     let install_dir = default_install_dir();
     candidates

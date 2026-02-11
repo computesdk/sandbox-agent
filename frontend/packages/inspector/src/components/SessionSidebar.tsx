@@ -1,6 +1,26 @@
 import { Plus, RefreshCw } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import type { AgentInfo, SessionInfo } from "sandbox-agent";
+import type { AgentInfo } from "sandbox-agent";
+
+type AgentModeInfo = { id: string; name: string; description: string };
+type AgentModelInfo = { id: string; name?: string };
+import SessionCreateMenu, { type SessionConfig } from "./SessionCreateMenu";
+
+type SessionListItem = {
+  sessionId: string;
+  agent: string;
+  ended: boolean;
+};
+
+const agentLabels: Record<string, string> = {
+  claude: "Claude Code",
+  codex: "Codex",
+  opencode: "OpenCode",
+  amp: "Amp",
+  pi: "Pi",
+  cursor: "Cursor"
+};
+const persistenceDocsUrl = "https://sandboxagent.dev/docs/session-persistence";
 
 const SessionSidebar = ({
   sessions,
@@ -8,22 +28,30 @@ const SessionSidebar = ({
   onSelectSession,
   onRefresh,
   onCreateSession,
+  onSelectAgent,
   agents,
   agentsLoading,
   agentsError,
   sessionsLoading,
-  sessionsError
+  sessionsError,
+  modesByAgent,
+  modelsByAgent,
+  defaultModelByAgent,
 }: {
-  sessions: SessionInfo[];
+  sessions: SessionListItem[];
   selectedSessionId: string;
-  onSelectSession: (session: SessionInfo) => void;
+  onSelectSession: (session: SessionListItem) => void;
   onRefresh: () => void;
-  onCreateSession: (agentId: string) => void;
+  onCreateSession: (agentId: string, config: SessionConfig) => void;
+  onSelectAgent: (agentId: string) => Promise<void>;
   agents: AgentInfo[];
   agentsLoading: boolean;
   agentsError: string | null;
   sessionsLoading: boolean;
   sessionsError: string | null;
+  modesByAgent: Record<string, AgentModeInfo[]>;
+  modelsByAgent: Record<string, AgentModelInfo[]>;
+  defaultModelByAgent: Record<string, string>;
 }) => {
   const [showMenu, setShowMenu] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -39,14 +67,6 @@ const SessionSidebar = ({
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, [showMenu]);
-
-  const agentLabels: Record<string, string> = {
-    claude: "Claude Code",
-    codex: "Codex",
-    opencode: "OpenCode",
-    amp: "Amp",
-    mock: "Mock"
-  };
 
   return (
     <div className="session-sidebar">
@@ -64,32 +84,18 @@ const SessionSidebar = ({
             >
               <Plus size={14} />
             </button>
-            {showMenu && (
-              <div className="sidebar-add-menu">
-                {agentsLoading && <div className="sidebar-add-status">Loading agents...</div>}
-                {agentsError && <div className="sidebar-add-status error">{agentsError}</div>}
-                {!agentsLoading && !agentsError && agents.length === 0 && (
-                  <div className="sidebar-add-status">No agents available.</div>
-                )}
-                {!agentsLoading && !agentsError &&
-                  agents.map((agent) => (
-                    <button
-                      key={agent.id}
-                      className="sidebar-add-option"
-                      onClick={() => {
-                        onCreateSession(agent.id);
-                        setShowMenu(false);
-                      }}
-                    >
-                      <div className="agent-option-left">
-                        <span className="agent-option-name">{agentLabels[agent.id] ?? agent.id}</span>
-                        {agent.version && <span className="agent-badge version">v{agent.version}</span>}
-                      </div>
-                      {agent.installed && <span className="agent-badge installed">Installed</span>}
-                    </button>
-                  ))}
-              </div>
-            )}
+            <SessionCreateMenu
+              agents={agents}
+              agentsLoading={agentsLoading}
+              agentsError={agentsError}
+              modesByAgent={modesByAgent}
+              modelsByAgent={modelsByAgent}
+              defaultModelByAgent={defaultModelByAgent}
+              onCreateSession={onCreateSession}
+              onSelectAgent={onSelectAgent}
+              open={showMenu}
+              onClose={() => setShowMenu(false)}
+            />
           </div>
         </div>
       </div>
@@ -111,12 +117,18 @@ const SessionSidebar = ({
               <div className="session-item-id">{session.sessionId}</div>
               <div className="session-item-meta">
                 <span className="session-item-agent">{agentLabels[session.agent] ?? session.agent}</span>
-                <span className="session-item-events">{session.eventCount} events</span>
                 {session.ended && <span className="session-item-ended">ended</span>}
               </div>
             </button>
           ))
         )}
+      </div>
+      <div className="session-persistence-note">
+        Sessions are persisted in your browser using IndexedDB.{" "}
+        <a href={persistenceDocsUrl} target="_blank" rel="noreferrer">
+          Configure persistence
+        </a>
+        .
       </div>
     </div>
   );

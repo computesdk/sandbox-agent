@@ -8,6 +8,9 @@ RUN npm install -g pnpm
 # Copy package files for workspaces
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY frontend/packages/inspector/package.json ./frontend/packages/inspector/
+COPY sdks/cli-shared/package.json ./sdks/cli-shared/
+COPY sdks/acp-http-client/package.json ./sdks/acp-http-client/
+COPY sdks/persist-indexeddb/package.json ./sdks/persist-indexeddb/
 COPY sdks/typescript/package.json ./sdks/typescript/
 
 # Install dependencies
@@ -15,10 +18,16 @@ RUN pnpm install --filter @sandbox-agent/inspector...
 
 # Copy SDK source (with pre-generated types from docs/openapi.json)
 COPY docs/openapi.json ./docs/
+COPY sdks/cli-shared ./sdks/cli-shared
+COPY sdks/acp-http-client ./sdks/acp-http-client
+COPY sdks/persist-indexeddb ./sdks/persist-indexeddb
 COPY sdks/typescript ./sdks/typescript
 
-# Build SDK (just tsup, skip generate since types are pre-generated)
+# Build cli-shared, acp-http-client, SDK, then persist-indexeddb (depends on SDK)
+RUN cd sdks/cli-shared && pnpm exec tsup
+RUN cd sdks/acp-http-client && pnpm exec tsup
 RUN cd sdks/typescript && SKIP_OPENAPI_GEN=1 pnpm exec tsup
+RUN cd sdks/persist-indexeddb && pnpm exec tsup
 
 # Copy inspector source and build
 COPY frontend/packages/inspector ./frontend/packages/inspector
@@ -95,9 +104,10 @@ COPY --from=inspector-build /app/frontend/packages/inspector/dist ./frontend/pac
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/build/target \
-    cargo build -p sandbox-agent --release --target aarch64-apple-darwin && \
+    cargo build -p sandbox-agent -p gigacode --release --target aarch64-apple-darwin && \
     mkdir -p /artifacts && \
-    cp target/aarch64-apple-darwin/release/sandbox-agent /artifacts/sandbox-agent-aarch64-apple-darwin
+    cp target/aarch64-apple-darwin/release/sandbox-agent /artifacts/sandbox-agent-aarch64-apple-darwin && \
+    cp target/aarch64-apple-darwin/release/gigacode /artifacts/gigacode-aarch64-apple-darwin
 
 # Default command to show help
 CMD ["ls", "-la", "/artifacts"]

@@ -5,11 +5,15 @@
 <h3 align="center">Run Coding Agents in Sandboxes. Control Them Over HTTP.</h3>
 
 <p align="center">
-  A server that runs inside your sandbox. Your app connects remotely to control Claude Code, Codex, OpenCode, or Amp — streaming events, handling permissions, managing sessions.
+  A server that runs inside your sandbox. Your app connects remotely to control Claude Code, Codex, OpenCode, Cursor, Amp, or Pi — streaming events, handling permissions, managing sessions.
 </p>
 
 <p align="center">
   <a href="https://sandboxagent.dev/docs">Documentation</a> — <a href="https://sandboxagent.dev/docs/api-reference">API Reference</a> — <a href="https://rivet.dev/discord">Discord</a>
+</p>
+
+<p align="center">
+  <em><strong>Experimental:</strong> <a href="./gigacode/">Gigacode</a> — use OpenCode's TUI with any coding agent.</em>
 </p>
 
 ## Why Sandbox Agent?
@@ -20,20 +24,18 @@ Sandbox Agent solves three problems:
 
 1. **Coding agents need sandboxes** — You can't let AI execute arbitrary code on your production servers. Coding agents need isolated environments, but existing SDKs assume local execution. Sandbox Agent is a server that runs inside the sandbox and exposes HTTP/SSE.
 
-2. **Every coding agent is different** — Claude Code, Codex, OpenCode, and Amp each have proprietary APIs, event formats, and behaviors. Swapping agents means rewriting your integration. Sandbox Agent provides one HTTP API — write your code once, swap agents with a config change.
+2. **Every coding agent is different** — Claude Code, Codex, OpenCode, Cursor, Amp, and Pi each have proprietary APIs, event formats, and behaviors. Swapping agents means rewriting your integration. Sandbox Agent provides one HTTP API — write your code once, swap agents with a config change.
 
 3. **Sessions are ephemeral** — Agent transcripts live in the sandbox. When the process ends, you lose everything. Sandbox Agent streams events in a universal schema to your storage. Persist to Postgres, ClickHouse, or [Rivet](https://rivet.dev). Replay later, audit everything.
 
 ## Features
 
-- **Universal Agent API**: Single interface to control Claude Code, Codex, OpenCode, and Amp with full feature coverage
-- **Streaming Events**: Real-time SSE stream of everything the agent does — tool calls, permission requests, file edits, and more
-- **Universal Session Schema**: [Standardized schema](https://sandboxagent.dev/docs/session-transcript-schema) that normalizes all agent event formats for storage and replay
-- **Human-in-the-Loop**: Approve or deny tool executions and answer agent questions remotely over HTTP
-- **Automatic Agent Installation**: Agents are installed on-demand when first used — no setup required
+- **Universal Agent API**: Single interface to control Claude Code, Codex, OpenCode, Cursor, Amp, and Pi with full feature coverage
+- **Universal Session Schema**: Standardized schema that normalizes all agent event formats for storage and replay
 - **Runs Inside Any Sandbox**: Lightweight static Rust binary. One curl command to install inside E2B, Daytona, Vercel Sandboxes, or Docker
 - **Server or SDK Mode**: Run as an HTTP server or embed with the TypeScript SDK
 - **OpenAPI Spec**: [Well documented](https://sandboxagent.dev/docs/api-reference) and easy to integrate from any language
+- **OpenCode SDK & UI Support** *(Experimental)*: [Connect OpenCode CLI, SDK, or web UI](https://sandboxagent.dev/docs/opencode-compatibility) to control agents through familiar OpenCode tooling
 
 ## Architecture
 
@@ -63,8 +65,12 @@ Choose the installation method that works best for your use case.
 
 Install skill with:
 
-```
+```bash
 npx skills add rivet-dev/skills -s sandbox-agent
+```
+
+```bash
+bunx skills add rivet-dev/skills -s sandbox-agent
 ```
 
 ### TypeScript SDK
@@ -74,7 +80,13 @@ Import the SDK directly into your Node or browser application. Full type safety 
 **Install**
 
 ```bash
-npm install sandbox-agent
+npm install sandbox-agent@0.2.x
+```
+
+```bash
+bun add sandbox-agent@0.2.x
+# Optional: allow Bun to run postinstall scripts for native binaries (required for SandboxAgent.start()).
+bun pm trust @sandbox-agent/cli-linux-x64 @sandbox-agent/cli-darwin-arm64 @sandbox-agent/cli-darwin-x64 @sandbox-agent/cli-win32-x64
 ```
 
 **Setup**
@@ -116,6 +128,8 @@ for await (const event of client.streamEvents("demo", { offset: 0 })) {
 }
 ```
 
+`permissionMode: "acceptEdits"` passes through to Claude, auto-approves file changes for Codex, and is treated as `default` for other agents.
+
 [SDK documentation](https://sandboxagent.dev/docs/sdks/typescript) — [Building a Chat UI](https://sandboxagent.dev/docs/building-chat-ui) — [Managing Sessions](https://sandboxagent.dev/docs/manage-sessions)
 
 ### HTTP Server
@@ -124,7 +138,7 @@ Run as an HTTP server and connect from any language. Deploy to E2B, Daytona, Ver
 
 ```bash
 # Install it
-curl -fsSL https://releases.rivet.dev/sandbox-agent/latest/install.sh | sh
+curl -fsSL https://releases.rivet.dev/sandbox-agent/0.2.x/install.sh | sh
 # Run it
 sandbox-agent server --token "$SANDBOX_TOKEN" --host 127.0.0.1 --port 2468
 ```
@@ -151,7 +165,13 @@ sandbox-agent server --no-token --host 127.0.0.1 --port 2468
 Install the CLI wrapper (optional but convenient):
 
 ```bash
-npm install -g @sandbox-agent/cli
+npm install -g @sandbox-agent/cli@0.2.x
+```
+
+```bash
+# Allow Bun to run postinstall scripts for native binaries.
+bun add -g @sandbox-agent/cli@0.2.x
+bun pm -g trust @sandbox-agent/cli-linux-x64 @sandbox-agent/cli-darwin-arm64 @sandbox-agent/cli-darwin-x64 @sandbox-agent/cli-win32-x64
 ```
 
 Create a session and send a message:
@@ -165,7 +185,11 @@ sandbox-agent api sessions send-message-stream my-session --message "Hello" --en
 You can also use npx like:
 
 ```bash
-npx sandbox-agent --help
+npx @sandbox-agent/cli@0.2.x --help
+```
+
+```bash
+bunx @sandbox-agent/cli@0.2.x --help
 ```
 
 [CLI documentation](https://sandboxagent.dev/docs/cli)
@@ -182,10 +206,6 @@ Debug sessions and events with the built-in Inspector UI (e.g., `http://localhos
 
 [Explore API](https://sandboxagent.dev/docs/api-reference) — [View Specification](https://github.com/rivet-dev/sandbox-agent/blob/main/docs/openapi.json)
 
-### Session Transcript Schema
-
-All events follow a [session transcript schema](https://sandboxagent.dev/docs/session-transcript-schema) that normalizes differences between agents.
-
 ### Tip: Extract credentials
 
 Often you need to use your personal API tokens to test agents on sandboxes:
@@ -195,18 +215,6 @@ sandbox-agent credentials extract-env --export
 ```
 
 This prints environment variables for your OpenAI/Anthropic/etc API keys to test with Sandbox Agent SDK.
-
-## Integrations
-
-Works with your stack:
-
-| Sandbox Providers | AI Platforms | Infrastructure | Storage |
-|---|---|---|---|
-| [Daytona](https://sandboxagent.dev/docs/deploy/daytona) | Anthropic | Docker | Postgres |
-| [E2B](https://sandboxagent.dev/docs/deploy/e2b) | OpenAI | Fly.io | ClickHouse |
-| [Vercel Sandboxes](https://sandboxagent.dev/docs/deploy) | [AI SDK](https://ai-sdk.dev) | AWS Nitro | [Rivet](https://rivet.dev) |
-
-Want support for another agent or sandbox provider? [Open an issue](https://github.com/rivet-dev/sandbox-agent/issues/new) to request it.
 
 ## FAQ
 
@@ -219,7 +227,7 @@ No, they're complementary. AI SDK is for building chat interfaces and calling LL
 <details>
 <summary><strong>Which coding agents are supported?</strong></summary>
 
-Claude Code, Codex, OpenCode, and Amp. The SDK normalizes their APIs so you can swap between them without changing your code.
+Claude Code, Codex, OpenCode, Cursor, Amp, and Pi. The SDK normalizes their APIs so you can swap between them without changing your code.
 </details>
 
 <details>
@@ -243,7 +251,7 @@ The server is a single Rust binary that runs anywhere with a curl install. If yo
 <details>
 <summary><strong>Can I use this with my personal API keys?</strong></summary>
 
-Yes. Use `sandbox-agent credentials extract-env` to extract API keys from your local agent configs (Claude Code, Codex, OpenCode, Amp) and pass them to the sandbox environment.
+Yes. Use `sandbox-agent credentials extract-env` to extract API keys from your local agent configs (Claude Code, Codex, OpenCode, Amp, Pi) and pass them to the sandbox environment.
 </details>
 
 <details>
