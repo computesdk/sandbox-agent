@@ -13,10 +13,12 @@ const sandbox = await compute.sandbox.create({
     {
       slug: "sandbox-agent",
       install:
+        "export BIN_DIR=$HOME/.local/bin && " +
         "curl -fsSL https://releases.rivet.dev/sandbox-agent/latest/install.sh | sh && " +
+        "export PATH=$BIN_DIR:$PATH && " +
         "sandbox-agent install-agent claude && " +
         "sandbox-agent install-agent codex",
-      start: "sandbox-agent server --no-token --host 0.0.0.0 --port 3000",
+      start: "export PATH=$HOME/.local/bin:$PATH && sandbox-agent server --no-token --host 0.0.0.0 --port 3000",
       port: 3000,
       environment: envs,
       health_check: {

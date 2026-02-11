@@ -21,8 +21,8 @@ importers:
         specifier: workspace:*
         version: link:../shared
       computesdk:
-        specifier: latest
-        version: 2.0.2
+        specifier: ^2.2.0
+        version: 2.2.0
       dotenv:
         specifier: ^16.0.0
         version: 16.6.1
@@ -2294,8 +2294,8 @@ packages:
   compare-versions@6.1.1:
     resolution: {integrity: sha512-4hm4VPpIecmlg59CHXnRDnqGplJFrbLG4aFEl5vl6cK1u76ws3LLvX7ikFnTDl5vo39sjWD6AaDPYodJp/NNHg==}
 
-  computesdk@2.0.2:
-    resolution: {integrity: sha512-VvxvzCSo/gW0BRF6wdMuvw6Fhw4uB9o13v/fv8kIm+qDjs/7iugsyfNk716SzFJA3MwN6awK4VvKuoAUXqU7eA==}
+  computesdk@2.2.0:
+    resolution: {integrity: sha512-gAAL8vMLkYUFH138OwbebTG9AYMh4RudhRvYboJvRdc9NQAafVHfvZtPwg4YVKPB3VpsfK5m9pkgv60Xr2cE1g==}
 
   confbox@0.1.8:
     resolution: {integrity: sha512-RMtmw0iFkeR4YV+fUOSucriAQNb9g8zFR52MWCtl+cCZOFRNL6zeB395vPzFhEjjn4fMxXudmELnl/KF/WrK6w==}
@@ -6529,7 +6529,7 @@ snapshots:
 
   compare-versions@6.1.1: {}
 
-  computesdk@2.0.2:
+  computesdk@2.2.0:
     dependencies:
       '@computesdk/cmd': 0.4.1
 
